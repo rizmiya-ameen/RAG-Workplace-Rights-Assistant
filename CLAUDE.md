@@ -24,17 +24,21 @@ pay_rate: SQL on pay_rates -> LLM only phrases the tool result
 all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -> user
 ```
 
-- **Stack**: Python 3.12 (`uv`), FastAPI, Postgres 16 + pgvector (Docker Compose),
-  `BAAI/bge-small-en-v1.5` embeddings (384 dims), `cross-encoder/ms-marco-MiniLM-L-6-v2`
-  re-ranker, OpenAI-compatible LLM client, BeautifulSoup4, pytest, React + Vite + TypeScript,
-  Langfuse, GitHub Actions, Azure.
-- **LLM**: development uses Ollama on the Windows host (not in Docker), model `qwen2.5:3b`,
-  via `LLM_BASE_URL=http://host.docker.internal:11434/v1`, `LLM_API_KEY=ollama`,
-  `LLM_MODEL=qwen2.5:3b`. README eval numbers and the deployed app use a hosted model
-  (Azure OpenAI, Australia East). Nothing before build step 10 needs an LLM.
-- **Machine limits**: ~7 GB RAM, no GPU (Ryzen 5 3500U). Docker capped at 3 GB via
-  `C:\Users\Rizmiya\.wslconfig`. Keep memory low: no 7B+ models, small re-ranker, lazy-load
-  models, generous LLM timeouts (CPU answers take 20-60 s).
+- **Stack**: Python 3.12 (`uv`), FastAPI, hosted Postgres 16 + pgvector (Neon; same in dev and
+  the deployed demo), `BAAI/bge-small-en-v1.5` embeddings (384 dims) and
+  `ms-marco-MiniLM-L-6-v2` re-ranker via **fastembed (ONNX Runtime, no torch)**,
+  OpenAI-compatible LLM client, BeautifulSoup4, pytest, React + Vite + TypeScript, Langfuse,
+  GitHub Actions, Azure.
+- **No Docker on the dev laptop.** The app runs natively with `uv`. The `Dockerfile` is built
+  only in GitHub Actions/Azure; CI tests use a Postgres service container on GitHub.
+  `docker-compose.yml` is an optional local Postgres for anyone who has Docker.
+- **LLM** (from build step 10): a hosted OpenAI-compatible model (Azure OpenAI, Australia East)
+  for development, README eval numbers and the deployed app; Ollama `qwen2.5:3b` stays as an
+  offline option (`LLM_BASE_URL=http://127.0.0.1:11434/v1`). Switching = three `.env` values.
+- **Machine limits**: ~7 GB RAM, no GPU (Ryzen 5 3500U); C: drive was full, so keep caches on
+  E: (`UV_CACHE_DIR=E:\dev-cache\uv`, `HF_HOME=E:\dev-cache\huggingface` user env vars; ONNX
+  models in repo `.cache/models`). Keep memory low: small models, lazy loading, small batches.
+  Close Chrome before large embedding runs.
 - **Tables**: `documents` (versioned by `effective_date`), `chunks` (one per clause, embedding +
   tsvector), `pay_rates` (structured), `guardrail_events`, optional `eval_runs`.
 - **Citations**: awards `MA0000XX:<clause>` (`28.2`, `15A.1`, `B.2.1`; long clauses split as
@@ -72,37 +76,34 @@ Found while building the parser (`app/ingestion/parse_award.py`):
 
 ## Commands
 
-Working now (copy `.env.example` to `.env` first if you want to change defaults; Compose runs
-without it). The api container bind-mounts `./backend` and auto-reloads; its venv is at
-`/opt/venv`, so the host's `backend/.venv` is separate.
+Setup: copy `.env.example` to `backend/.env` and set `DATABASE_URL` (Neon connection string).
+`app/config.py` reads `backend/.env` by absolute path. Never commit `.env`.
 
 ```bash
-docker compose up -d --build                # db (pgvector pg16) + api on 127.0.0.1:8000
-curl http://127.0.0.1:8000/health
-docker compose exec api pytest -q
-cd backend && uv run pytest -q              # same tests on the host
-cd backend && uv run ruff check .
-docker compose exec api python -m app.db.init                 # apply schema (idempotent)
-docker compose exec db psql -U wra -d wra -c "\d chunks"
-docker compose exec api python -m app.ingestion.fetch --all   # or --award MA000009
-docker compose exec api python -m app.ingestion.parse_award --all             # parse + validate
-docker compose exec api python -m app.ingestion.parse_award --award MA000009 --show 28.2
+cd backend                                  # all commands run from backend/
+uv run pytest -q                            # DB tests skip if DATABASE_URL is unreachable
+uv run ruff check .
+uv run uvicorn app.main:app --reload        # API on http://127.0.0.1:8000 (/docs, /health)
+uv run python -m app.db.init                               # apply schema (idempotent)
+uv run python -m app.ingestion.fetch --all                 # or --award MA000009
+uv run python -m app.ingestion.parse_award --all           # parse + validate
+uv run python -m app.ingestion.parse_award --award MA000009 --show 28.2
+uv run python -m app.ingestion.ingest --all                # skips unchanged versions; --force
 ```
+
+Ingest embeds `heading + "\n" + content` with bge (no prefix on passages; `QUERY_PREFIX` in
+`app/embeddings.py` only on queries). fastembed gives the same vectors as
+sentence-transformers (cosine 1.0000 checked on award chunks) at ~330 MB process RAM.
 
 Fetch saves `data/raw/<award>_<effective date>.html` + `.json` (url, title, date, sha256).
 The date comes from the page's "amendments up to and including <date>" paragraph.
 `ALLOWED_HOSTS` in `app/ingestion/fetch.py` is a guardrail: exact host, https, port 443,
 checked again on every redirect.
 
-On the host use `127.0.0.1`, not `localhost`, for Postgres: Windows tries `::1` first and hangs.
-DB tests (`tests/test_schema.py`) roll back their rows and skip if Postgres isn't running.
+For a local Postgres use `127.0.0.1`, not `localhost`: Windows tries `::1` first and hangs.
+DB tests (`test_schema.py`, `test_ingest.py`) roll back their rows and use `TEST-*` source ids.
 
-Planned:
-
-```bash
-docker compose exec api python -m app.ingestion.ingest --award MA000009
-docker compose exec api python -m app.eval.run_eval --mode all
-```
+Planned: `uv run python -m app.eval.run_eval --mode all`
 
 ## Rules
 
@@ -139,6 +140,20 @@ docker compose exec api python -m app.eval.run_eval --mode all
   MA000004 298, MA000003 197, MA000002 296 = 1,163; max 1,799 chars; 0 problems).
   Fixtures `tests/fixtures/MA000009_excerpt.html` and `MA000002_excerpt.html` are whole
   elements sliced byte-for-byte from the raw pages. 53 tests pass on host and in the container.
-- Next: step 6 (ingest: embed + upsert).
-- Decisions: LLM = Ollama `qwen2.5:3b` for development, hosted model later. Pay data = award
-  rate tables parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.
+- Step 6 (ingest): done: `app/embeddings.py` (lazy bge-small, query prefix only on queries),
+  `app/ingestion/ingest.py` (validate -> embed -> replace chunks per document version, skip
+  if sha256 unchanged). DB holds 1,163 chunks, all embedded (MA000009 372, MA000004 298,
+  MA000003 197, MA000002 296). 60 tests pass on host and in the container.
+  Memory: the first full embed run pushed the 7 GB laptop to ~0.4 GB free with Chrome open;
+  close Chrome before model-heavy runs. Dockerfile uses a uv cache mount (image was 3.74 GB);
+  the rebuild with it was interrupted, so the image size is still to be verified (step 20 CI).
+- Re-platform (2026-11-16, after step 6): Docker used too much RAM and filled C:, so Docker
+  Desktop was uninstalled (C: 0 -> 17 GB free), embeddings moved to fastembed/ONNX (venv
+  1.3 -> 0.2 GB), caches moved to E:. Dev DB moves to Neon: waiting for the user to create the
+  Neon project and put `DATABASE_URL` in `backend/.env`; then `app.db.init` +
+  `app.ingestion.ingest --all` to reload the 1,163 chunks. 44 tests pass, 16 DB tests skip
+  until then. The plan artifact still describes the Docker setup: update it.
+- Next: finish the Neon switch, then step 7 (pay-rate extraction).
+- Decisions: LLM = hosted (Azure OpenAI) from step 10, Ollama optional offline. DB = Neon
+  Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables
+  parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.

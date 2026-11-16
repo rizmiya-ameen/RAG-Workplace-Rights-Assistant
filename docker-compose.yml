@@ -1,39 +1,25 @@
+# Optional: a local Postgres + pgvector for people who have Docker.
+# The default dev setup uses a hosted Neon Postgres (DATABASE_URL in backend/.env) and runs the
+# app natively with uv. The API's Dockerfile is built in CI/Azure, not on the dev laptop.
+#
+#   docker compose up -d
+#   DATABASE_URL=postgresql://wra:wra@127.0.0.1:5432/wra
 services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-wra}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wra}
-      POSTGRES_DB: ${POSTGRES_DB:-wra}
+      POSTGRES_USER: wra
+      POSTGRES_PASSWORD: wra
+      POSTGRES_DB: wra
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U wra -d wra"]
       interval: 5s
       timeout: 5s
       retries: 10
-
-  api:
-    build: ./backend
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-wra}:${POSTGRES_PASSWORD:-wra}@db:5432/${POSTGRES_DB:-wra}
-    # Dev: live code from the host, auto-reload on change.
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
-    volumes:
-      - ./backend:/app
-      - ./data:/data
-    ports:
-      - "127.0.0.1:8000:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      db:
-        condition: service_healthy
 
 volumes:
   pgdata:

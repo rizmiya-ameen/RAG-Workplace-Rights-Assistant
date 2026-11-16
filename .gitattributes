@@ -1,0 +1,4 @@
+# Downloaded source pages and verbatim fixtures must stay byte-for-byte
+# (sha256 in data/raw/*.json; fixtures are exact slices of the raw pages).
+data/raw/** -text
+backend/tests/fixtures/** -text

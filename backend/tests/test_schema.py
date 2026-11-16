@@ -20,7 +20,7 @@ def _vec(dims: int) -> str:
 @pytest.fixture(scope="module")
 def schema_ready():
     try:
-        conn = connect(connect_timeout=3, autocommit=True)
+        conn = connect(connect_timeout=10, autocommit=True)
     except psycopg.OperationalError as exc:
         pytest.skip(f"Postgres not reachable: {exc}")
     with conn:

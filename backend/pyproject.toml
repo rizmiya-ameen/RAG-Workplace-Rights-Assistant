@@ -9,6 +9,7 @@ dependencies = [
     "pydantic-settings>=2.6",
     "psycopg[binary]>=3.2",
     "beautifulsoup4>=4.12",
+    "fastembed>=0.5",  # ONNX Runtime: bge embeddings + MiniLM re-ranker without torch
 ]
 
 [dependency-groups]
