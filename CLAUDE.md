@@ -59,6 +59,17 @@ The pages are Word exports. The parser must:
 - join paragraph spans with "" (Word splits words: "C" + "lassifications") and table cells with " ";
 - ignore schedule links in the page header (start at clause 1).
 
+Found while building the parser (`app/ingestion/parse_award.py`):
+- the award body is one `<div>` inside `#mainContent`; walk its `<p>`/`<tr>` in document order
+  (some tables sit in a wrapper `<div>`, e.g. MA000009 "Table 4—Casino gaming minimum rates");
+- unclassed `<p>` inside the body are real content (definition lead-ins, NOTEs, footnotes);
+  stop at the first `Footer` after clause 1 (website footer comes after it);
+- also skip `hisk` and bracketed amendment notes ("[… inserted by PR774714 …]");
+- schedule rate tables have no "$" (`Level 1 39.66 52.88 …`), so `is_rate_table` also
+  triggers on rows with two or more `\d.\d\d` amounts;
+- a `Level*`/`SubLevel*` paragraph without a clause number is kept as body with a warning
+  (one in MA000009 C.3).
+
 ## Commands
 
 Working now (copy `.env.example` to `.env` first if you want to change defaults; Compose runs
@@ -74,6 +85,8 @@ cd backend && uv run ruff check .
 docker compose exec api python -m app.db.init                 # apply schema (idempotent)
 docker compose exec db psql -U wra -d wra -c "\d chunks"
 docker compose exec api python -m app.ingestion.fetch --all   # or --award MA000009
+docker compose exec api python -m app.ingestion.parse_award --all             # parse + validate
+docker compose exec api python -m app.ingestion.parse_award --award MA000009 --show 28.2
 ```
 
 Fetch saves `data/raw/<award>_<effective date>.html` + `.json` (url, title, date, sha256).
@@ -115,13 +128,17 @@ docker compose exec api python -m app.eval.run_eval --mode all
 - Step 3 (schema): done: `app/db/schema.sql` (documents, chunks with `vector(384)` + HNSW
   cosine + generated `tsv` with GIN, pay_rates with enum checks, guardrail_events, eval_runs),
   `app/db/conn.py`, `python -m app.db.init`; 14 tests pass on host and in the container.
-- Open question: commit `data/raw/*.html` (1.5-3 MB per award, ~9 MB for the four, more each 1 July) or git-ignore it.
-- Not yet committed: user to decide (an initial commit straight to `main` was blocked by the
-  permission check).
+- Git: steps 1-4 pushed to `origin/main` (github.com/rizmiya-ameen/RAG-Workplace-Rights-Assistant),
+  raw award HTML committed so eval data is reproducible. The user runs commits/pushes
+  (`.git/config` is sandboxed; commits from Claude were blocked).
 - Known warning: Starlette suggests `httpx2` instead of `httpx` for TestClient (harmless).
 - Step 4 (fetch): done: `app/ingestion/fetch.py`, four awards saved (MA000009, MA000004,
   MA000003 at 2026-07-01; MA000002 at 2026-10-26), sha256s verified; 34 tests pass on host and
   in the container, including allow-list refusals and redirect checks.
-- Next: step 5 (award parser).
+- Step 5 (award parser): done: all four awards pass validation (MA000009 372 chunks,
+  MA000004 298, MA000003 197, MA000002 296 = 1,163; max 1,799 chars; 0 problems).
+  Fixtures `tests/fixtures/MA000009_excerpt.html` and `MA000002_excerpt.html` are whole
+  elements sliced byte-for-byte from the raw pages. 53 tests pass on host and in the container.
+- Next: step 6 (ingest: embed + upsert).
 - Decisions: LLM = Ollama `qwen2.5:3b` for development, hosted model later. Pay data = award
   rate tables parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.
