@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
+.env
+
+# Model caches
+.cache/
+models/
+
+# Eval outputs (keep the folder, not every run)
+eval/results/*.json
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
