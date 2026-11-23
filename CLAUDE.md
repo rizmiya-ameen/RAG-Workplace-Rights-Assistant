@@ -24,7 +24,7 @@ pay_rate: SQL on pay_rates -> LLM only phrases the tool result
 all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -> user
 ```
 
-- **Stack**: Python 3.12 (`uv`), FastAPI, hosted Postgres 16 + pgvector (Neon; same in dev and
+- **Stack**: Python 3.12 (`uv`), FastAPI, hosted Postgres 18 + pgvector (Neon; same in dev and
   the deployed demo), `BAAI/bge-small-en-v1.5` embeddings (384 dims) and
   `ms-marco-MiniLM-L-6-v2` re-ranker via **fastembed (ONNX Runtime, no torch)**,
   OpenAI-compatible LLM client, BeautifulSoup4, pytest, React + Vite + TypeScript, Langfuse,
@@ -33,8 +33,9 @@ all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -
   only in GitHub Actions/Azure; CI tests use a Postgres service container on GitHub.
   `docker-compose.yml` is an optional local Postgres for anyone who has Docker.
 - **LLM** (from build step 10): a hosted OpenAI-compatible model (Azure OpenAI, Australia East)
-  for development, README eval numbers and the deployed app; Ollama `qwen2.5:3b` stays as an
-  offline option (`LLM_BASE_URL=http://127.0.0.1:11434/v1`). Switching = three `.env` values.
+  for development, README eval numbers and the deployed app. Ollama was uninstalled
+  (2026-11-23) to free C:; it can be reinstalled as an offline option
+  (`LLM_BASE_URL=http://127.0.0.1:11434/v1`). Switching = three `.env` values.
 - **Machine limits**: ~7 GB RAM, no GPU (Ryzen 5 3500U); C: drive was full, so keep caches on
   E: (`UV_CACHE_DIR=E:\dev-cache\uv`, `HF_HOME=E:\dev-cache\huggingface` user env vars; ONNX
   models in repo `.cache/models`). Keep memory low: small models, lazy loading, small batches.
@@ -153,7 +154,13 @@ Planned: `uv run python -m app.eval.run_eval --mode all`
   Neon project and put `DATABASE_URL` in `backend/.env`; then `app.db.init` +
   `app.ingestion.ingest --all` to reload the 1,163 chunks. 44 tests pass, 16 DB tests skip
   until then. The plan artifact still describes the Docker setup: update it.
-- Next: finish the Neon switch, then step 7 (pay-rate extraction).
-- Decisions: LLM = hosted (Azure OpenAI) from step 10, Ollama optional offline. DB = Neon
+- C: cleanup (2026-11-23): pip + npm caches purged, Ollama and `qwen2.5:3b` uninstalled
+  (C: 9.5 -> 23.2 GB free). WSL Ubuntu (2.6 GB) kept.
+- Neon switch (2026-11-23): done: project in AWS Sydney (ap-southeast-2), Postgres 18.7,
+  pgvector 0.8.7, pooled endpoint. Schema applied, 1,163 chunks re-ingested (MA000009 372,
+  MA000004 298, MA000003 197, MA000002 296; ~6.5 min). 60 tests pass, 0 skipped.
+  docker-compose moved to `pgvector/pgvector:pg18`; CI (step 20) must also use pg18.
+- Next: step 7 (pay-rate extraction).
+- Decisions: LLM = hosted (Azure OpenAI) from step 10 (Ollama uninstalled; optional offline). DB = Neon
   Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables
   parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.
