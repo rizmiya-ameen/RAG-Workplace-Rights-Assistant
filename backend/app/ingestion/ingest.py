@@ -4,8 +4,9 @@
     python -m app.ingestion.ingest --award MA000009 [--force]
 
 A version is (source_id, effective_date). If that version is already stored with the same
-sha256 it is skipped; otherwise its chunks are replaced in a single transaction. Older
-versions are kept (queries read only the latest effective_date per source).
+sha256 its chunks are skipped; otherwise they are replaced in a single transaction. Pay rates
+(app.ingestion.parse_rates) are reloaded every run. Older versions are kept (queries read only
+the latest effective_date per source).
 """
 
 import argparse
@@ -17,6 +18,7 @@ import psycopg
 from app.db.conn import apply_schema, connect
 from app.embeddings import DIMS, embed_passages, passage_text
 from app.ingestion.parse_award import Chunk, latest_raw, parse_award_html, validate
+from app.ingestion.parse_rates import load_rates, parse_rates_html, validate_rates
 
 Embedder = Callable[[list[str]], list[list[float]]]
 
@@ -68,19 +70,25 @@ def ingest_document(
 
 
 def ingest_award(conn: psycopg.Connection, award_id: str, force: bool = False) -> str:
+    """Store chunks (skipped if the page is unchanged) and always reload the pay rates,
+    which are cheap: no embedding."""
     path, meta = latest_raw(award_id)
-    result = parse_award_html(path.read_bytes())
+    html = path.read_bytes()
+    result = parse_award_html(html)
     problems = validate(result)
+    rates = parse_rates_html(html, award_id)
+    problems += validate_rates(rates)
     if problems:
         raise ValueError(f"{award_id} failed validation, not ingesting: {problems[:5]}")
     started = time.perf_counter()
     doc_id, status = ingest_document(conn, meta, result.chunks, force=force)
+    n_rates = load_rates(conn, doc_id, meta["effective_date"], rates.rates)
     conn.commit()
     secs = time.perf_counter() - started
     return (
         f"{award_id} {meta['effective_date']}: {status}, {len(result.chunks)} chunks, "
-        f"{sum(c.is_rate_table for c in result.chunks)} rate tables, document_id {doc_id}, "
-        f"{secs:.0f}s"
+        f"{sum(c.is_rate_table for c in result.chunks)} rate tables, {n_rates} pay rates, "
+        f"document_id {doc_id}, {secs:.0f}s"
     )
 
 
@@ -99,7 +107,8 @@ def main() -> None:
         for award_id in STARTING_AWARDS if args.all else args.award:
             print(ingest_award(conn, award_id, force=args.force), flush=True)
         total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
-    print(f"chunks in database: {total}")
+        n_rates = conn.execute("SELECT count(*) FROM pay_rates").fetchone()[0]
+    print(f"chunks in database: {total}, pay rates: {n_rates}")
 
 
 if __name__ == "__main__":

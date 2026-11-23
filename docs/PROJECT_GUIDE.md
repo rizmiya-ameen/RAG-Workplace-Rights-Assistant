@@ -278,9 +278,9 @@ measured, then changed the platform without throwing away any of the code:
 | 3 | Database schema | Done |
 | 4 | Fetch award pages (with allow-list) | Done |
 | 5 | Award parser + validation | Done |
-| 6 | Ingest: embed and store | Done (code); reload into Neon pending |
-| 7 | Pay-rate extraction | Next |
-| 8 | Retrieval: vector, then hybrid | |
+| 6 | Ingest: embed and store | Done (1,163 chunks in Neon) |
+| 7 | Pay-rate extraction | Done (1,227 adult rates; juniors/apprentices later) |
+| 8 | Retrieval: vector, then hybrid | Next |
 | 9 | Golden set + first evaluation | |
 | 10 | Generation: prompt, JSON, `/chat` | |
 | 11 | Guardrails | |

@@ -12,6 +12,7 @@ from app.db.conn import apply_schema, connect
 from app.embeddings import DIMS, QUERY_PREFIX, passage_text
 from app.ingestion.ingest import ingest_document
 from app.ingestion.parse_award import parse_award_html
+from app.ingestion.parse_rates import load_rates, parse_rates_html
 
 FIXTURE = Path(__file__).parent / "fixtures" / "MA000002_excerpt.html"
 
@@ -122,6 +123,33 @@ def test_rate_table_flag_is_stored(conn):
         "SELECT clause_ref FROM chunks WHERE document_id = %s AND is_rate_table", (doc_id,)
     ).fetchall()
     assert ("18.4",) in flagged
+
+
+def test_pay_rates_load_and_sql_lookup(conn):
+    """Step-7 gate on the fixture: a SQL lookup returns the Hospitality minimum-rate rows."""
+    html = (FIXTURE.parent / "MA000009_excerpt.html").read_bytes()
+    doc_id, _ = ingest_document(conn, meta(), parse_award_html(html).chunks, embed=fake_embed)
+    rates = parse_rates_html(html, "MA000009").rates
+    assert load_rates(conn, doc_id, "2000-01-01", rates) == len(rates)
+    assert load_rates(conn, doc_id, "2000-01-01", rates) == len(rates)  # replaces, no duplicates
+
+    rows = conn.execute(
+        """SELECT employment_type, rate_type, amount::text, unit, source_clause
+           FROM pay_rates
+           WHERE document_id = %s AND classification = 'Level 2' AND condition IS NULL
+           ORDER BY rate_type, employment_type""",
+        (doc_id,),
+    ).fetchall()
+    assert rows == [
+        ("casual", "hourly", "33.85", "per hour", "B.2.3"),
+        ("full_time", "hourly", "27.08", "per hour", "B.2.1"),
+        ("part_time", "hourly", "27.08", "per hour", "B.2.1"),
+        ("full_time", "weekly", "1029.10", "per week", "18.1"),
+    ]
+    total = conn.execute(
+        "SELECT count(*) FROM pay_rates WHERE document_id = %s", (doc_id,)
+    ).fetchone()[0]
+    assert total == len(rates)
 
 
 def test_wrong_vector_size_is_refused(conn, chunks):

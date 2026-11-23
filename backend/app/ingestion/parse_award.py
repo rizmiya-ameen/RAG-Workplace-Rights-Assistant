@@ -38,7 +38,8 @@ _SUBLEVEL = re.compile(r"(?P<num>[A-Z]{1,2}\.\d+[A-Z]?(?:\.\d+[A-Z]?)*)\s+\S")
 _SCHEDULE = re.compile(r"Schedule\s+(?P<num>[A-Z]{1,2})\s*[—–-]\s*\S")
 _AMENDMENT_NOTE = re.compile(r"\[[^\]]*\bPR\d{6}\b[^\]]*\]")
 _RATE = re.compile(r"\$\s?\d|\d%")
-_AMOUNT = re.compile(r"\b\d{1,3}(?:,\d{3})*\.\d{2}\b")  # schedule tables omit the "$"
+# Schedule tables omit the "$"; weekly rates have 4 digits and no comma ("1056.80").
+_AMOUNT = re.compile(r"\b\d+(?:,\d{3})*\.\d{2}\b")
 
 
 def _is_rate_row(row: str) -> bool:

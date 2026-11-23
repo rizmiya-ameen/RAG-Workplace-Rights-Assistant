@@ -12,6 +12,7 @@ from app.ingestion.parse_award import (
     MAX_CHARS,
     Chunk,
     ParseResult,
+    _is_rate_row,
     _split,
     latest_raw,
     parse_award_html,
@@ -87,6 +88,12 @@ def test_table_inside_wrapper_div_is_read(hosp):
 
 def test_schedule_rate_tables_without_dollar_sign_are_flagged(hosp):
     assert by_ref(hosp)["B.2.1"].is_rate_table
+
+
+def test_weekly_rates_without_comma_count_as_amounts():
+    # Row quoted from MA000004 Table 4—Minimum rates; "1056.80" has four digits before the dot.
+    assert _is_rate_row("Retail Employee Level 1 1056.80 27.81")
+    assert not _is_rate_row("Retail Employee Level 1")
 
 
 def test_rates_footnote_is_content_not_a_clause(hosp):

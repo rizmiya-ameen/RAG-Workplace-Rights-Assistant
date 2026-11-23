@@ -89,7 +89,10 @@ uv run python -m app.db.init                               # apply schema (idemp
 uv run python -m app.ingestion.fetch --all                 # or --award MA000009
 uv run python -m app.ingestion.parse_award --all           # parse + validate
 uv run python -m app.ingestion.parse_award --award MA000009 --show 28.2
-uv run python -m app.ingestion.ingest --all                # skips unchanged versions; --force
+uv run python -m app.ingestion.parse_rates --all           # pay rates: parse + cross-check
+uv run python -m app.ingestion.parse_rates --award MA000009 --show "Level 2"
+uv run python -m app.ingestion.ingest --all                # skips unchanged chunks; --force
+                                                           # (pay rates reload every run)
 ```
 
 Ingest embeds `heading + "\n" + content` with bge (no prefix on passages; `QUERY_PREFIX` in
@@ -160,7 +163,19 @@ Planned: `uv run python -m app.eval.run_eval --mode all`
   pgvector 0.8.7, pooled endpoint. Schema applied, 1,163 chunks re-ingested (MA000009 372,
   MA000004 298, MA000003 197, MA000002 296; ~6.5 min). 60 tests pass, 0 skipped.
   docker-compose moved to `pgvector/pgvector:pg18`; CI (step 20) must also use pg18.
-- Next: step 7 (pay-rate extraction).
+- Step 7 (pay rates): done: `app/ingestion/parse_rates.py` reads tables into a grid
+  (rowspan/colspan expanded). Adult only: weekly (full-time) from the minimum-rates clause
+  (`MIN_RATES_CLAUSE`: MA000009 18.1, MA000004 17.1, MA000003 15.1, MA000002 16.1); hourly,
+  penalty and overtime from the "Summary of Hourly Rates" schedule (B, or A in MA000003).
+  `condition` = title qualifier ("casino gaming", "other than shiftworkers") + column header
+  + percentage, e.g. "Sunday (175%)". Ordinary column = header exactly "Ordinary hours" or
+  "Monday to Friday" (Clerks); Clerks casual ordinary is "Monday to Friday" (125%).
+  Validation: weekly / 38 = hourly; every minimum hourly rate appears as a schedule
+  full-time hourly rate; no duplicate rows. Ingest reloads pay rates every run.
+  Neon: 1,227 pay rates (MA000009 367, MA000004 336, MA000003 124, MA000002 400).
+  Also fixed `_AMOUNT` (missed "1056.80"), so 17.1/15.1/16.1 are now rate-table chunks.
+  76 tests pass. TODO: junior, apprentice, managerial rates and allowances (Schedule C).
+- Next: step 8 (retrieval: vector, then hybrid).
 - Decisions: LLM = hosted (Azure OpenAI) from step 10 (Ollama uninstalled; optional offline). DB = Neon
   Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables
   parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.
