@@ -108,7 +108,8 @@ checked again on every redirect.
 For a local Postgres use `127.0.0.1`, not `localhost`: Windows tries `::1` first and hangs.
 DB tests (`test_schema.py`, `test_ingest.py`) roll back their rows and use `TEST-*` source ids.
 
-Planned: `uv run python -m app.eval.run_eval --mode all`
+`uv run python -m app.eval.run_eval --mode retrieval` (vector vs hybrid; `--no-save` to skip
+writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
 
 ## Rules
 
@@ -184,7 +185,17 @@ Planned: `uv run python -m app.eval.run_eval --mode all`
   Manual checks: hybrid finds "clause 28.2" and 13A (disconnect) that vector misses; vector
   kept some hits hybrid lost (MA000004 11.2). Compare properly in step 9. ~50-100 ms/query.
   82 tests pass.
-- Next: step 9 (golden set + first retrieval eval: hit@6, MRR for vector vs hybrid).
+- Step 9 (golden set + retrieval eval): done: `eval/golden_set.jsonl` = 59 answerable
+  (hosp 26, retail 11, ff 10, clerks 10, cross-award 2; each with expected clauses + verbatim
+  quote) + 10 decline. `tests/test_golden_set.py` checks every quote and expected clause
+  against the parsed award. `app/eval/run_eval.py --mode retrieval` writes
+  eval/results/*.json (git-ignored) + an eval_runs row. First results (k=6):
+  vector hit@1 0.64, hit@6 0.90, MRR 0.735, hit@24 0.98; hybrid 0.54 / 0.80 / 0.641 / 0.98.
+  Hybrid loses on ordering, not recall: keep both modes, decide after the re-ranker.
+  Top-1 cosine distance: answerable mean 0.255 vs decline 0.327 (overlapping; gate needs the
+  re-ranker score too). README created with the eval table. 204 tests pass.
+- Next: step 10 (generation: prompt, JSON output, canary, POST /chat) — needs the Azure
+  OpenAI endpoint, key and deployment name in `backend/.env`.
 - Decisions: LLM = hosted (Azure OpenAI) from step 10 (Ollama uninstalled; optional offline). DB = Neon
   Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables
   parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.
