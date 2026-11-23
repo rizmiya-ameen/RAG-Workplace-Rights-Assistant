@@ -93,6 +93,7 @@ uv run python -m app.ingestion.parse_rates --all           # pay rates: parse + 
 uv run python -m app.ingestion.parse_rates --award MA000009 --show "Level 2"
 uv run python -m app.ingestion.ingest --all                # skips unchanged chunks; --force
                                                            # (pay rates reload every run)
+uv run python -m app.retrieval.search "Do casuals get more on Sundays?" --mode hybrid --award MA000009
 ```
 
 Ingest embeds `heading + "\n" + content` with bge (no prefix on passages; `QUERY_PREFIX` in
@@ -156,7 +157,7 @@ Planned: `uv run python -m app.eval.run_eval --mode all`
   1.3 -> 0.2 GB), caches moved to E:. Dev DB moves to Neon: waiting for the user to create the
   Neon project and put `DATABASE_URL` in `backend/.env`; then `app.db.init` +
   `app.ingestion.ingest --all` to reload the 1,163 chunks. 44 tests pass, 16 DB tests skip
-  until then. The plan artifact still describes the Docker setup: update it.
+  until then. Plan artifact updated 2026-11-23 (Neon, fastembed, no local Docker, progress).
 - C: cleanup (2026-11-23): pip + npm caches purged, Ollama and `qwen2.5:3b` uninstalled
   (C: 9.5 -> 23.2 GB free). WSL Ubuntu (2.6 GB) kept.
 - Neon switch (2026-11-23): done: project in AWS Sydney (ap-southeast-2), Postgres 18.7,
@@ -175,7 +176,15 @@ Planned: `uv run python -m app.eval.run_eval --mode all`
   Neon: 1,227 pay rates (MA000009 367, MA000004 336, MA000003 124, MA000002 400).
   Also fixed `_AMOUNT` (missed "1056.80"), so 17.1/15.1/16.1 are now rate-table chunks.
   76 tests pass. TODO: junior, apprentice, managerial rates and allowances (Schedule C).
-- Next: step 8 (retrieval: vector, then hybrid).
+- Step 8 (retrieval): done: `app/retrieval/search.py` `search(conn, query, mode, award, k)`;
+  latest effective_date per source only; vector = cosine on HNSW with
+  `hnsw.iterative_scan = strict_order` (award filter still returns k); hybrid = vector top 24
+  + full-text top 24 fused with RRF (k=60). Full text ORs the query's stemmed words and drops
+  words in > 20% of chunks (`MAX_DF`; "employe" is in 76%) because ts_rank has no IDF.
+  Manual checks: hybrid finds "clause 28.2" and 13A (disconnect) that vector misses; vector
+  kept some hits hybrid lost (MA000004 11.2). Compare properly in step 9. ~50-100 ms/query.
+  82 tests pass.
+- Next: step 9 (golden set + first retrieval eval: hit@6, MRR for vector vs hybrid).
 - Decisions: LLM = hosted (Azure OpenAI) from step 10 (Ollama uninstalled; optional offline). DB = Neon
   Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables
   parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.

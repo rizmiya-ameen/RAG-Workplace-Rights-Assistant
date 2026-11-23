@@ -280,7 +280,7 @@ measured, then changed the platform without throwing away any of the code:
 | 5 | Award parser + validation | Done |
 | 6 | Ingest: embed and store | Done (1,163 chunks in Neon) |
 | 7 | Pay-rate extraction | Done (1,227 adult rates; juniors/apprentices later) |
-| 8 | Retrieval: vector, then hybrid | Next |
+| 8 | Retrieval: vector, then hybrid | Done (`app/retrieval/search.py`) |
 | 9 | Golden set + first evaluation | |
 | 10 | Generation: prompt, JSON, `/chat` | |
 | 11 | Guardrails | |
