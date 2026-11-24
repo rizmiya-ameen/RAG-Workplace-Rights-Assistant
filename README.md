@@ -9,10 +9,10 @@ Victoria guidance, and cites the exact source every time (for example `MA000009:
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–17 of 22 are done. Four awards, the NES and 12 WorkSafe
+> Work in progress: build steps 1–18 of 22 are done. Four awards, the NES and 12 WorkSafe
 > pages; retrieval with a cross-encoder re-ranker, cited answers (`POST /chat`), exact pay
 > rates from a structured tool, guardrails with an injection classifier, the full
-> evaluation work and Langfuse tracing; the web UI comes next.
+> evaluation work, Langfuse tracing and a React web UI; hardening, CI and Azure come next.
 
 ## How it works
 
@@ -148,6 +148,23 @@ rules fixed them ("earn" always means money; a money word plus a level and an em
 type is an amount question; "hourly pay"), and those nine rows are now in the set. A
 misrouted pay question fails safe: on the clause route the model cannot state amounts, so
 the user gets no number rather than a wrong one.
+
+## Web UI
+
+A small React + TypeScript + Tailwind page (`frontend/`) over `POST /chat`:
+
+- every answer carries a route badge (Answer, Pay rate, Needs a detail, Not in sources,
+  Referred, Not answered, Out of scope), so it is clear whether the reply came from the
+  clauses, the pay table or a guardrail;
+- citation chips ("Hospitality cl. B.2.3", "NES s 117", "WorkSafe first steps") open the
+  clause text the model was given, with a link to the official page;
+- an award filter (NES and WorkSafe guidance are always searched), a disclaimer banner and
+  the disclaimer under every answer, plus the latency and a short request ref that matches
+  the Langfuse trace;
+- the API is stateless, so when it asks for a missing detail ("which level?"), the reply is
+  sent together with the original question;
+- answers are rendered as plain text, never HTML (they come from a language model; a test
+  checks that `<img onerror=…>` stays text).
 
 ## Observability
 
@@ -313,4 +330,14 @@ uv run python -m app.pipeline "Can an office worker ask to work from home?"   # 
 uv run uvicorn app.main:app                                                 # /docs, POST /chat
 uv run python -m app.observability check   # optional: LANGFUSE_* keys in backend/.env
 uv run pytest -q
+```
+
+Web UI (Node 22), with the API running on port 8000:
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://127.0.0.1:5173 (Vite forwards /api to the API, no CORS needed)
+npm test           # Vitest + Testing Library
+npm run build      # type-check + production build in dist/
 ```

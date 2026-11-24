@@ -106,6 +106,7 @@ class Citation(BaseModel):
     title: str
     url: str
     clause_text: str
+    heading: str = ""  # clause / section heading, shown above the text in the web UI
 
 
 class ChatResponse(BaseModel):
@@ -187,6 +188,7 @@ def _answer(conn, question, award, search_fn, chat_fn, request_id, root) -> Chat
                     title=docs.get(h.source_id, ("", ""))[0],
                     url=docs.get(h.source_id, ("", ""))[1],
                     clause_text=h.content,
+                    heading=h.heading or "",
                 )
                 for h in cited
             ],

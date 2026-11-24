@@ -79,6 +79,7 @@ def test_answer_with_citations_and_disclaimer(hits):
     assert [c.id for c in r.citations] == ["MA000009:11.1"]
     assert r.citations[0].title == TITLE and r.citations[0].url == URL
     assert r.citations[0].clause_text == hits[0].content
+    assert r.citations[0].heading == (hits[0].heading or "")
     assert r.disclaimer == DISCLAIMER
     assert re.fullmatch(r"[0-9a-f]{32}", r.request_id)
     # B.2.3 is a rate table: its amounts were masked before the LLM saw them.

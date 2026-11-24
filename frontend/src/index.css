@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+/* Palette: warm paper and eucalyptus green, amber for cautions. Every colour is a token with
+   a dark-mode value, so components only use the names below (bg-paper, text-ink, ...). */
+:root {
+  --paper: #f5f3ee;
+  --surface: #ffffff;
+  --ink: #1c2420;
+  --muted: #5b6660;
+  --line: #dbd7cd;
+  --accent: #1e5e48;
+  --accent-ink: #ffffff;
+  --accent-soft: #e2eee8;
+  --warn: #7a4a00;
+  --warn-soft: #fbf0d9;
+  --danger: #9a2b2b;
+  --danger-soft: #f8e3e0;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #111513;
+    --surface: #19201c;
+    --ink: #e7ece9;
+    --muted: #9aa6a0;
+    --line: #2c3530;
+    --accent: #7cc4a6;
+    --accent-ink: #0e1a15;
+    --accent-soft: #1d3a2f;
+    --warn: #f0c66e;
+    --warn-soft: #3a2e15;
+    --danger: #f0a3a3;
+    --danger-soft: #3d2121;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --font-sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+h1,
+h2 {
+  text-wrap: balance;
+}

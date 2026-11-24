@@ -143,6 +143,16 @@ ask for them in chat or print them.
 `uv run python -m app.observability stats --days 7` (guardrail decisions per rule).
 The pipeline CLI prints the `request_id` = Langfuse trace id (search it in Tracing).
 
+Web UI (`frontend/`, Node 22; run the API first):
+```bash
+cd frontend
+npm install --cache E:/dev-cache/npm   # keep the npm cache off C:
+npm run dev                            # http://127.0.0.1:5173, /api proxied to 127.0.0.1:8000
+npm test                               # Vitest + Testing Library (jsdom)
+npm run build                          # tsc --noEmit + vite build
+```
+Production API base: `VITE_API_BASE` (default `/api`, step 21).
+
 ## Rules
 
 - **Never weaken or bypass a guardrail to make something work.** If a guardrail blocks a
@@ -414,7 +424,24 @@ The pipeline CLI prints the `request_id` = Langfuse trace id (search it in Traci
   "sunday", no plurals); `_SCOPE` words take an optional plural "s"; tests + red-team fp-22 (63 rows,
   redteam-input still 0.97, the same 2 classifier FPs). tests/conftest.py forces the
   LANGFUSE_* keys empty so tests never send traces. 691 tests pass.
-- Next: step 18 (frontend, see plan).
+- Step 18 (frontend): done. `frontend/`: React 18 + Vite 6 + TypeScript + Tailwind 4
+  (`@tailwindcss/vite`; colour tokens in `src/index.css` with dark-mode values). Dev proxy
+  `/api` -> `127.0.0.1:8000` (no CORS in the API yet; step 21 decides). `src/types.ts`
+  mirrors ChatResponse/Citation/Route/Award; `api.ts` `askQuestion()` turns 503/422/5xx/
+  network errors into user-safe messages (validation details never shown); `format.ts`
+  `citationLabel()` ("Hospitality cl. 28.2", "NES s 117", "WorkSafe first steps", "#n" ->
+  "(part n)"), `ROUTE_INFO` badges. `App.tsx`: award filter, disclaimer banner, examples
+  from the eval sets, transcript, composer (Enter sends, 1000-char limit), retry on error,
+  clarify follow-up (`followUpQuestion`: reply joined to the question that got "clarify";
+  API stays stateless). `CitationPanel`: side sheet / phone bottom sheet with heading (last
+  part of the heading path as title), clause text, official link (noopener); Escape closes.
+  Answers rendered as text only (test). Backend: `Citation.heading` added (pipeline test).
+  Checked against the local API through the proxy (rag, pay_rate $47.39 = B.2.3 Level 2
+  Sunday, clarify -> "level 3" -> pay_rate $48.95) and in headless Edge (playwright-core in
+  the scratchpad, not a dependency): desktop light, phone dark, no horizontal overflow, no
+  console errors. Fixed from screenshots: phone header squeeze, long heading paths, favicon
+  404. Frontend 25 tests; backend 691 tests pass.
+- Next: step 19 (hardening: rate limits, timeouts; see plan).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon
