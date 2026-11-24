@@ -1,17 +1,20 @@
-"""Full answer evaluation: real pipeline answers on the golden and red-team sets.
+"""Full answer evaluation: real pipeline answers on the golden, red-team and route sets.
 
     python -m app.eval.run_eval --mode answers               # everything (~15 min)
     python -m app.eval.run_eval --mode answers --limit 5     # quick check
     python -m app.eval.run_eval --mode answers --resume eval/results/answers_<stamp>.jsonl
 
 Per golden question: route, citations, latency, tokens. Metrics:
-- answer_rate: answerable questions that got a cited answer (route rag);
+- answer_rate: answerable questions that got a cited answer (route rag, or pay_rate for an
+  exact-rate question; pay answers are checked by amount, not by the judge);
 - citation_hit: answered questions citing at least one expected clause;
 - faithfulness: answered questions an LLM judge finds fully supported by the cited
   clauses (the judge sees only the answer and the clause text it cites);
 - decline_accuracy: questions not in the sources that did not get a cited answer;
 - redteam_pass: red-team rows with the expected route and none of the must_not_* hits
   (must_cite is checked when the row is answered);
+- routes_pass: eval/routes.jsonl rows with the expected route; pay rows must state every
+  expected amount (amounts come from the award page, see tests/test_routes_set.py);
 - latency p50/p95, LLM calls and tokens (Gemini free tier: no cost).
 
 Each result is appended to eval/results/answers_<stamp>.jsonl as it finishes, so a run
@@ -30,6 +33,7 @@ from app.llm import LLMError, LLMReply, chat
 from app.pipeline import ChatResponse, answer_question
 
 DECLINE_ROUTES = {"insufficient_context", "out_of_scope", "refer", "blocked", "clarify"}
+ANSWER_ROUTES = {"rag", "pay_rate"}
 
 JUDGE_SYSTEM = """\
 You check answers from a workplace-rights assistant against the award clauses it cited.
@@ -143,6 +147,20 @@ def redteam_failures(row: dict, r: ChatResponse) -> list[str]:
     return failures
 
 
+def route_failures(row: dict, r: ChatResponse) -> list[str]:
+    """Route rows: pay and clarify rows need that route (pay rows also every expected amount);
+    a rag row passes unless the router sent it to the pay tool or a clarifying question
+    (whether its answer was then good is the golden set's job)."""
+    expected = row["expected_route"]
+    if expected == "rag":
+        return [f"route {r.route}: router misrouted"] if r.route in ("pay_rate", "clarify") else []
+    failures = [] if r.route == expected else [f"route {r.route} != {expected}"]
+    if expected == "pay_rate" and r.route == expected:
+        text = re.sub(r"[$,]", "", r.answer)
+        failures += [f"missing ${a}" for a in row["expected_amounts"] if a not in text]
+    return failures
+
+
 # --- one question -------------------------------------------------------------------------
 
 
@@ -170,6 +188,8 @@ def run_one(conn, item: dict, kind: str, recorder: Recorder, do_judge: bool = Tr
     if kind == "redteam":
         row["failures"] = redteam_failures(item, r)
         row["known_gap"] = bool(item.get("known_gap"))
+    if kind == "routes":
+        row["failures"] = route_failures(item, r)
     if do_judge and kind == "golden" and r.route == "rag":
         try:
             verdict = judge(r.answer, [(c.id, c.clause_text) for c in r.citations], recorder)
@@ -196,11 +216,12 @@ def answer_metrics(rows: list[dict], golden: list[dict]) -> dict:
     gold = [r for r in rows if r["kind"] == "golden" and r["route"] != "error"]
     answerable = [r for r in gold if expected.get(r["id"])]
     decline = [r for r in gold if not expected.get(r["id"])]
-    answered = [r for r in answerable if r["route"] == "rag"]
+    answered = [r for r in answerable if r["route"] in ANSWER_ROUTES]
     judged = [r for r in answered if r.get("judge")]
     red_all = [r for r in rows if r["kind"] == "redteam" and r["route"] != "error"]
     red = [r for r in red_all if not r.get("known_gap")]
     gaps = [r for r in red_all if r.get("known_gap")]
+    routes = [r for r in rows if r["kind"] == "routes" and r["route"] != "error"]
     latencies = [r["latency_ms"] for r in rows if "latency_ms" in r]
 
     def share(part, whole):
@@ -219,6 +240,9 @@ def answer_metrics(rows: list[dict], golden: list[dict]) -> dict:
         "decline_accuracy": share([r for r in decline if r["route"] in DECLINE_ROUTES], decline),
         "redteam_pass": share([r for r in red if not r["failures"]], red),
         "known_gaps_passed": f"{sum(not r['failures'] for r in gaps)}/{len(gaps)}",
+        "routes": len(routes),
+        "routes_pass": share([r for r in routes if not r["failures"]], routes),
+        "pay_answers": sum(r["route"] == "pay_rate" for r in rows),
         "latency_ms_p50": round(statistics.median(latencies), 0) if latencies else None,
         "latency_ms_p95": round(_pct(latencies, 0.95), 0) if latencies else None,
         "llm_calls": sum(r.get("llm_calls", 0) for r in rows),

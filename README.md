@@ -8,9 +8,9 @@ and cites the exact clause every time (for example `MA000009:28.2`).
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–13 of 22 are done. Retrieval with a cross-encoder
-> re-ranker, cited answers (`POST /chat`), guardrails and the full answer evaluation work;
-> the pay-rate tool and the web UI come next.
+> Work in progress: build steps 1–14 of 22 are done. Retrieval with a cross-encoder
+> re-ranker, cited answers (`POST /chat`), exact pay rates from a structured tool, guardrails
+> and the full evaluation work; NES and WorkSafe sources and the web UI come next.
 
 ## How it works
 
@@ -27,12 +27,26 @@ all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -
 - **Pay rates:** read from the awards' own rate tables into a structured `pay_rates` table
   (1,227 adult rates), cross-checked against each other. The LLM never reads pay amounts from
   text.
+- **Router:** plain rules. A question asking for an amount, with the award, employment type
+  and classification level known, goes to the pay tool (SQL); if one of those is missing, the
+  app asks for it (a clarifying question written by code, no LLM call); everything else is
+  answered from the cited clauses.
 - **Storage:** Postgres 18 + pgvector on Neon (HNSW for vectors, GIN for full text).
 - **Generation:** any OpenAI-compatible model; the demo uses Google Gemini
   (`gemini-3.5-flash-lite`, free tier). Sources are wrapped in `<source id=…>` tags as data,
   dollar amounts are masked before the model sees them, and the reply must be JSON whose
   citations were actually retrieved. A per-request canary detects prompt leaks. The
   disclaimer is added by code, not the model.
+
+Example pay answer (`POST /chat`; here the LLM was over its quota, so the template answer
+was used, see below):
+
+> **Q:** How much does a level 2 casual get in a hotel on Sunday?
+>
+> **A:** Minimum adult rates under the Hospitality Industry (General) Award:
+> - Level 2, casual, Sunday (175%): $47.39 per hour (clause B.2.3, from 2026-07-01)
+>
+> These are the award's minimums; an employer can pay more. *(cites MA000009:B.2.3)*
 
 Example (`POST /chat`, General Retail):
 
@@ -77,6 +91,37 @@ Red-team input routes (`run_eval --mode redteam-input`, no LLM):
 The two known gaps (a base64-encoded instruction and letter-spaced text) are invisible to
 regex rules; the Prompt Guard classifier is the next layer for those. Even when they get
 through, retrieved text is wrapped as data and the output checks still apply.
+
+## Router and pay rates
+
+| Question | Route | What happens |
+|---|---|---|
+| "How much does a level 2 casual get in a hotel on Sunday?" | `pay_rate` | SQL on `pay_rates`; answer cites the rate table (B.2.3) |
+| "How much do casuals get paid at a cafe?" | `clarify` | "…I need to know your classification level (Introductory, Level 1, … Level 6, Level 3A)" |
+| "How much overtime pay does a casual get in hospitality?" | `rag` | Overtime, evening, junior and allowance amounts aren't in the tool, so the clauses explain the percentages |
+| "Is the pay rate higher on Sundays?" | `rag` | A yes/no question asks about the rule, not an amount |
+
+The LLM only phrases the tool's rows. Its wording is used only if every dollar figure in it
+is one the tool returned and it states at least one of them; otherwise (or if the LLM is
+down) a template answer built from the same rows is used, so a pay answer never depends on
+the model getting a number right.
+
+Router eval (`run_eval --mode routes`, no LLM): `eval/routes.jsonl` has 29 rows (17 pay,
+5 clarify, 7 look-alike questions that must stay on the clauses). A test computes each
+expected amount from the parsed award page with the tool's own filter, so no amount is typed
+by hand.
+
+| Route rows | Route accuracy (pay / clarify / rag) | Golden questions on the right route |
+|---|---|---|
+| 29 | 1.00 (1.00 / 1.00 / 1.00) | 69 of 69 |
+
+Those rows were written while building the router, so 1.00 flatters it. A check with nine
+fresh phrasings found only 2 of the 7 pay questions routed correctly ("what do level 4 retail
+casuals earn…", "pay for a part time level 3 cook…" went to the clauses). Three general
+rules fixed them ("earn" always means money; a money word plus a level and an employment
+type is an amount question; "hourly pay"), and those nine rows are now in the set. A
+misrouted pay question fails safe: on the clause route the model cannot state amounts, so
+the user gets no number rather than a wrong one.
 
 ## Evaluation
 

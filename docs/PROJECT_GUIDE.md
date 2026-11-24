@@ -295,7 +295,7 @@ measured, then changed the platform without throwing away any of the code:
 | 11 | Guardrails | Done (red-team routes 44/44, no golden question blocked) |
 | 12 | Full evaluation | Done (answer rate 0.90, faithfulness 1.00, decline 1.00, red-team 1.00) |
 | 13 | Re-ranker | Done (hit@1 0.64 → 0.83, hit@6 0.90 → 0.98; relevance gate at −9.7) |
-| 14 | Router, pay tool, clarify route | |
+| 14 | Router, pay tool, clarify route | Done (route accuracy 1.00 on 29 rows; pay amounts from SQL, LLM only phrases) |
 | 15 | NES and WorkSafe ingestion | |
 | 16 | Prompt Guard classifier | |
 | 17 | Observability (Langfuse) | |
@@ -372,7 +372,17 @@ The database commands need `DATABASE_URL` in `backend/.env`; questions also need
   ~3.5 s by using batches of 2 (each batch pads to its longest clause). A tighter relevance
   gate was not possible: the re-ranker scores topic, not coverage (a visa question scored
   higher than a correctly found answer), so the gate only stops clearly unrelated questions.
-- **"Constraints?" A 7 GB laptop forced measured trade-offs: ONNX instead of torch
+- **"How do you stop the model inventing pay rates?"** It never sees them: amounts are
+  masked in the clauses it reads. Amount questions go to SQL on the parsed rate tables;
+  the LLM only rewords the rows, and its wording is thrown away (template used instead) if
+  it contains any dollar figure the tool didn't return. Missing details (award, casual or
+  not, level) get a clarifying question written by code.
+- **"Why rules for the router, not an LLM?"** Every decision is testable and explainable,
+  and it costs nothing. I measured it honestly: my own test rows scored 1.00, but nine fresh
+  phrasings found 5 of 7 pay questions misrouted; three general rules fixed them. Misroutes fail
+  safe (no number instead of a wrong number). An LLM classifier is the fallback if the eval
+  shows it's needed.
+- **"Constraints?"** A 7 GB laptop forced measured trade-offs: ONNX instead of torch
   (same vectors, a third of the memory), hosted Postgres instead of local Docker.
 
 ## 13. Glossary

@@ -3,6 +3,7 @@
     python -m app.eval.run_eval --mode retrieval          # vector / hybrid, +/- re-ranker
     python -m app.eval.run_eval --mode retrieval --search-modes vector+rerank --no-save
     python -m app.eval.run_eval --mode redteam-input      # input guard routes, no LLM
+    python -m app.eval.run_eval --mode routes             # router decisions, no LLM
 
 Retrieval metrics (answerable questions, k = 6):
 - hit@1, hit@6: share of questions with an expected clause at rank 1 / in the top 6;
@@ -24,6 +25,11 @@ expected_route ("rag" = passes the guard). Rows marked known_gap are reported se
 golden questions are also run, to count false positives on ordinary questions. The
 must_not_* / must_cite fields are checked on full answers in step 12.
 
+Routes (eval/routes.jsonl, step 14): the router's route for pay, clarify and look-alike
+rag questions (pay rows also check the award, employment type, level and days it read), plus
+the golden set: answerable questions must stay on rag (or the route in their
+"expected_route"), and decline questions must never get a pay answer.
+
 Results go to eval/results/<mode>_<timestamp>.json and the eval_runs table.
 Later steps add answer modes (faithfulness, routes, red-team).
 """
@@ -43,11 +49,13 @@ from app.db.conn import connect
 from app.eval.answers import Recorder, answer_metrics, run_one
 from app.guardrails.input_guard import check_input
 from app.retrieval.search import CANDIDATES, MODES, search
+from app.router import route_question
 
 VARIANTS = (*MODES, *(f"{m}+rerank" for m in MODES))
 
 GOLDEN_PATH = REPO_DIR / "eval" / "golden_set.jsonl"
 REDTEAM_PATH = REPO_DIR / "eval" / "redteam.jsonl"
+ROUTES_PATH = REPO_DIR / "eval" / "routes.jsonl"
 RESULTS_DIR = REPO_DIR / "eval" / "results"
 K = 6
 
@@ -63,6 +71,59 @@ def load_redteam(path: Path = REDTEAM_PATH) -> list[dict]:
 def input_route(question: str) -> str:
     route = check_input(question).route
     return "rag" if route == "pass" else route
+
+
+def full_route(question: str, award: str | None):
+    """(route, router decision or None): the input guard, then the router."""
+    checked = check_input(question)
+    if checked.route != "pass":
+        return checked.route, None
+    decision = route_question(checked.text, award)
+    return decision.route, decision
+
+
+def run_routes(rows: list[dict], golden: list[dict]) -> dict:
+    results = []
+    for r in rows:
+        route, d = full_route(r["question"], r["award"])
+        ok = route == r["expected_route"]
+        if ok and route == "pay_rate":
+            s = r["slots"]
+            ok = (d.award, d.employment_type, d.level, list(d.days), d.casino) == (
+                s["award"],
+                s["employment_type"],
+                s["level"],
+                s["days"],
+                s.get("casino", False),
+            )
+        if ok and route == "clarify":
+            ok = d.missing == r["missing"]
+        results.append({"id": r["id"], "expected": r["expected_route"], "actual": route, "ok": ok})
+
+    golden_wrong = []
+    for g in golden:
+        route, _ = full_route(g["question"], g["award"])
+        if g["expected"]:
+            want = g.get("expected_route", "rag")
+            if route != want:
+                golden_wrong.append(f"{g['id']}({route})")
+        elif route == "pay_rate":
+            golden_wrong.append(f"{g['id']}({route})")
+    metrics = {
+        "n": len(results),
+        "route_accuracy": sum(r["ok"] for r in results) / len(results),
+        "golden_n": len(golden),
+        "golden_route_accuracy": 1 - len(golden_wrong) / len(golden),
+    }
+    for kind in ("pay_rate", "clarify", "rag"):
+        part = [r for r in results if r["expected"] == kind]
+        metrics[f"{kind}_accuracy"] = sum(r["ok"] for r in part) / len(part)
+    return {
+        "metrics": metrics,
+        "failures": [r for r in results if not r["ok"]],
+        "golden_wrong": golden_wrong,
+        "rows": results,
+    }
 
 
 def run_redteam_input(rows: list[dict], golden: list[dict]) -> dict:
@@ -241,13 +302,18 @@ def markdown_table(results: list[dict], k: int = K) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        "--mode", choices=["retrieval", "redteam-input", "answers"], default="retrieval"
+        "--mode",
+        choices=["retrieval", "redteam-input", "routes", "answers"],
+        default="retrieval",
     )
     ap.add_argument("--search-modes", nargs="+", choices=VARIANTS, default=list(VARIANTS))
     ap.add_argument("--no-save", action="store_true", help="don't write results or eval_runs")
     ap.add_argument("--limit", type=int, help="answers: first N questions per set")
     ap.add_argument(
-        "--sets", nargs="+", choices=["golden", "redteam"], default=["golden", "redteam"]
+        "--sets",
+        nargs="+",
+        choices=["golden", "redteam", "routes"],
+        default=["golden", "redteam", "routes"],
     )
     ap.add_argument("--pace", type=float, default=4.0, help="answers: seconds between LLM calls")
     ap.add_argument("--no-judge", action="store_true", help="answers: skip the faithfulness judge")
@@ -257,6 +323,23 @@ def main() -> None:
     golden = load_golden()
     if args.mode == "answers":
         run_answers(args, golden)
+        return
+    if args.mode == "routes":
+        result = run_routes(load_golden(ROUTES_PATH), golden)
+        m = result["metrics"]
+        print(
+            f"router: {m['route_accuracy']:.2f} correct over {m['n']} route rows (pay "
+            f"{m['pay_rate_accuracy']:.2f}, clarify {m['clarify_accuracy']:.2f}, rag "
+            f"{m['rag_accuracy']:.2f}); golden questions on the right route "
+            f"{m['golden_route_accuracy']:.2f} of {m['golden_n']}"
+        )
+        for f in result["failures"]:
+            print(f"  FAIL {f['id']}: expected {f['expected']}, got {f['actual']}")
+        for gid in result["golden_wrong"]:
+            print(f"  golden question misrouted: {gid}")
+        if not args.no_save:
+            with connect() as conn:
+                _save(conn, args.mode, {"routes": result}, {"routes": m})
         return
     if args.mode == "redteam-input":
         result = run_redteam_input(load_redteam(), golden)
@@ -311,6 +394,8 @@ def run_answers(args, golden: list[dict]) -> None:
         items += [("golden", g) for g in golden[: args.limit]]
     if "redteam" in args.sets:
         items += [("redteam", r) for r in load_redteam()[: args.limit]]
+    if "routes" in args.sets:
+        items += [("routes", r) for r in load_golden(ROUTES_PATH)[: args.limit]]
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = args.resume or RESULTS_DIR / f"answers_{stamp}.jsonl"

@@ -297,3 +297,90 @@ def test_chat_retrieval_uses_the_reranker():
 
     answer_question(FakeConn(), "What is the casual loading?", search_fn=search_fn, chat_fn=_no_llm)
     assert seen["rerank"] is True and seen["k"] == 6
+
+
+@pytest.fixture
+def pay_tool(monkeypatch, hits):
+    """Fake pay tool and clause fetch: one real MA000009 B.2.3 row, cited from the fixture."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app import pipeline
+    from app.tools.pay_rates import Rate
+
+    rate = Rate(
+        "MA000009",
+        "Level 2",
+        "casual",
+        "penalty",
+        "Sunday (175%)",
+        Decimal("47.39"),
+        "per hour",
+        "B.2.3",
+        date(2026, 7, 1),
+    )
+    seen = {}
+
+    def lookup(conn, award, **kw):
+        seen.update(kw, award=award)
+        return [rate] if kw["level"] == "2" else []
+
+    monkeypatch.setattr(pipeline.pay_rates, "lookup", lookup)
+    monkeypatch.setattr(
+        pipeline.pay_rates, "classifications", lambda conn, award: ["Introductory level", "Level 1"]
+    )
+    monkeypatch.setattr(pipeline, "clause_hits", lambda conn, award, refs: [hits[1]])
+    return seen
+
+
+def test_pay_question_is_answered_from_the_tool(pay_tool, hits):
+    chat_fn = _llm(answer="A Level 2 casual gets at least $47.39 an hour on Sundays.")
+    r = answer_question(
+        FakeConn(),
+        "How much does a level 2 casual get in a hotel on Sunday?",
+        search_fn=_no_search,
+        chat_fn=chat_fn,
+    )
+    assert r.route == "pay_rate" and "$47.39" in r.answer
+    assert [c.id for c in r.citations] == ["MA000009:B.2.3"]
+    assert pay_tool == {
+        "award": "MA000009",
+        "level": "2",
+        "employment_type": "casual",
+        "days": ("sunday",),
+        "casino": False,
+    }
+    assert "<tool_result" in chat_fn.seen[0][1]["content"]
+
+
+def test_pay_answer_with_a_made_up_amount_uses_the_template(pay_tool):
+    conn = FakeConn()
+    r = answer_question(
+        conn,
+        "How much does a level 2 casual get in a hotel on Sunday?",
+        search_fn=_no_search,
+        chat_fn=_llm(answer="About $50.00 an hour."),
+    )
+    assert r.route == "pay_rate" and "$50.00" not in r.answer and "$47.39" in r.answer
+    assert ("output", "amount_removed") in conn.events
+    assert ("output", "pay_template") in conn.events
+
+
+def test_missing_level_gets_a_clarifying_question_without_search_or_llm(pay_tool):
+    r = answer_question(
+        FakeConn(), "How much do casuals get paid at a cafe?", search_fn=_no_search, chat_fn=_no_llm
+    )
+    assert r.route == "clarify" and r.citations == []
+    assert "(Introductory, Level 1)" in r.answer
+
+
+def test_unknown_level_says_no_rate(pay_tool):
+    conn = FakeConn()
+    r = answer_question(
+        conn,
+        "How much does a level 9 casual get in a hotel?",
+        search_fn=_no_search,
+        chat_fn=_no_llm,
+    )
+    assert r.route == "insufficient_context" and "Pay Calculator" in r.answer
+    assert ("output", "pay_no_rate") in conn.events

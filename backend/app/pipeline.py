@@ -2,10 +2,12 @@
 
     python -m app.pipeline "Do casuals get paid more on Sundays?" --award MA000009
 
-Routes: rag, clarify (the model asks for a missing detail), insufficient_context, fallback
-(reply failed a check), and from the input guard: blocked (injection, evasion), refer
-(personal advice or dispute) and out_of_scope. Step 14 adds the router with the pay_rate
-route; step 13 the re-ranker and relevance gate.
+Routes: rag, pay_rate (amount from the pay tool), clarify (the router or the model asks for
+a missing detail), insufficient_context, fallback (reply failed a check), and from the input
+guard: blocked (injection, evasion), refer (personal advice or dispute) and out_of_scope.
+
+After the input guard, app/router.py picks pay_rate / clarify / rag (step 14). rag:
+retrieval with the re-ranker and relevance gate (step 13), context guard, LLM, output guard.
 """
 
 import argparse
@@ -25,8 +27,11 @@ from app.guardrails.input_guard import check_input
 from app.guardrails.output_guard import check_output
 from app.llm import chat
 from app.rag.generate import parse_reply
+from app.rag.pay_answer import phrase
 from app.rag.prompts import build_messages, new_canary
-from app.retrieval.search import Hit, search
+from app.retrieval.search import Hit, clause_hits, search
+from app.router import clarify_text, route_question
+from app.tools import pay_rates
 
 DISCLAIMER = (
     "General information only, not legal advice. Check the cited clauses, and contact the "
@@ -64,8 +69,21 @@ ROUTE_TEXT = {
     ),
 }
 
+NO_RATE_TEXT = (
+    "I couldn't find that classification in the award's adult pay tables. Please check the "
+    "level on your payslip or contract; the Fair Work Ombudsman's Pay Calculator "
+    "(calculate.fairwork.gov.au) covers junior, apprentice and other rates."
+)
+
 Route = Literal[
-    "rag", "clarify", "insufficient_context", "fallback", "blocked", "refer", "out_of_scope"
+    "rag",
+    "pay_rate",
+    "clarify",
+    "insufficient_context",
+    "fallback",
+    "blocked",
+    "refer",
+    "out_of_scope",
 ]
 
 
@@ -152,7 +170,33 @@ def answer_question(
         route: Route = checked.route  # type: ignore[assignment]
         return respond(text, route, [])
 
-    # 2. Retrieval on the redacted question, then the context guard.
+    # 2. Router: amount questions go to the pay tool, or get a clarifying question.
+    decision = route_question(checked.text, award)
+    if decision.route == "clarify":
+        levels = None
+        if decision.award:
+            levels = pay_rates.short_levels(pay_rates.classifications(conn, decision.award))
+        return respond(clarify_text(decision, levels), "clarify", [])
+    if decision.route == "pay_rate":
+        rates = pay_rates.lookup(
+            conn,
+            decision.award,
+            level=decision.level,
+            employment_type=decision.employment_type,
+            days=decision.days,
+            casino=decision.casino,
+        )
+        if not rates:
+            events.append(("output", "pay_no_rate", {"award": decision.award}))
+            return respond(NO_RATE_TEXT, "insufficient_context", [])
+        answer, pay_events = phrase(
+            checked.text, decision.award, rates, canary=new_canary(), chat_fn=chat_fn
+        )
+        events.extend(("output", rule, detail) for rule, detail in pay_events)
+        refs = list(dict.fromkeys(r.source_clause for r in rates))
+        return respond(answer, "pay_rate", clause_hits(conn, decision.award, refs))
+
+    # 3. Retrieval on the redacted question, then the context guard.
     hits = search_fn(
         conn,
         checked.text,
@@ -178,7 +222,7 @@ def answer_question(
         events.append(("context", "relevance_gate", {"top_score": round(top, 2)}))
         return respond(INSUFFICIENT_TEXT, "insufficient_context", [])
 
-    # 3. Generation.
+    # 4. Generation.
     canary = new_canary()
     titles = {sid: title for sid, (title, _) in docs.items()}
     messages, masked = build_messages(checked.text, hits, canary, titles)
@@ -186,7 +230,7 @@ def answer_question(
         events.append(("context", "amounts_masked", {"count": masked}))
     reply = chat_fn(messages)
 
-    # 4. Output guard: reply checks (canary, JSON, citations), then the answer text.
+    # 5. Output guard: reply checks (canary, JSON, citations), then the answer text.
     by_id = {h.citation: h for h in hits}
     parsed = parse_reply(reply.content, canary=canary, retrieved=list(by_id))
     for rule in parsed.events:

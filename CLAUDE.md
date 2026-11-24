@@ -119,6 +119,10 @@ writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
 `uv run python -m app.eval.run_eval --mode answers` (real answers + judge on Gemini, ~15 min,
 ~140 LLM calls; `--limit 5` for a quick check, `--resume <file>` after a quota stop).
 
+`uv run python -m app.eval.run_eval --mode routes` (router decisions on eval/routes.jsonl +
+golden, no LLM). `uv run python -m app.tools.pay_rates MA000009 --level 2 --type casual
+--day ordinary sunday` (pay tool; `--casino` for the casino-gaming tables).
+
 `uv run python -m app.pipeline "question" --award MA000009` asks one question end to end
 (same path as `POST /chat`). Needs `LLM_API_KEY` in `backend/.env`; never print it.
 
@@ -280,9 +284,34 @@ writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
   Answer eval with rerank stopped at Gemini's daily quota (429) after 69/115 questions
   (eval/results/answers_20261124T053930Z.jsonl): answer rate 38/38, citation 1.00,
   faithfulness 32/33 (hosp-20: strict judge, claim is in 25.2(g)), red-team 29/29, p50 2.9
-  s. TODO: `--resume ../eval/results/answers_20261124T053930Z.jsonl` after the quota resets,
-  then complete the README row. 467 tests pass.
-- Next: step 14 (router, pay tool, clarify route).
+  s. Kept partial: step 14 changed the pipeline, so a fresh run replaces it. 467 tests
+  pass.
+- Step 14 (router, pay tool, clarify): done. `app/router.py` `route_question(text, award)`
+  -> Decision(route pay_rate | clarify | rag, award, employment_type, level, days, casino,
+  missing). Rules: amount phrase (`_PAY`: how much ... get/paid/earn, pay/hourly/minimum rate,
+  hourly pay, minimum wage, "$") or money word + level + employment type; yes/no questions
+  -> rag; amounts the tool lacks (`_NOT_IN_TOOL`: overtime, evening/night/midnight, shift,
+  junior, apprentice, allowances, higher duties) -> rag. Award from the request, else
+  industry words (fast food before retail; two awards -> None). Missing award/type/level ->
+  clarify, text by code (`clarify_text`, levels via `pay_rates.short_levels`), no LLM.
+  `app/tools/pay_rates.py` `lookup()` = SQL (latest document) + pure `select()`: ordinary
+  (hourly + weekly) or Saturday/Sunday/public-holiday penalty rows; shiftworker rows left
+  out; casino-gaming rows only when the question says casino/gaming (Level 3A is only
+  there). `app/rag/pay_answer.py` `phrase()`: LLM phrases `<tool_result>` rows (escaped,
+  canary); kept only if no canary, valid JSON, output guard removes no amount (allowed =
+  tool amounts) and a tool amount is stated; else `template_answer` (events
+  `pay_template` with reason, `amount_removed`, `pay_no_rate`). LLM down -> template, never
+  503. Pay answers cite the rate-table chunks (`search.clause_hits`). Route `pay_rate` added
+  to ChatResponse. `eval/routes.jsonl` 29 rows; `tests/test_routes_set.py` recomputes each
+  expected amount from the parsed page with `select()`. golden hosp-23 has
+  `"expected_route": "pay_rate"`. `run_eval --mode routes`: 1.00 on 29 rows, golden 69/69.
+  Fresh-phrasing check first got 2/7 pay questions (fixed: earn rule, money word + slots,
+  "hourly pay", "getting", chain names). Answers eval: `--sets` now includes routes
+  (route_failures: route + every expected amount in the answer); answer_rate counts
+  pay_rate as answered. 565 tests pass.
+  TODO when the Gemini quota resets: a fresh full `--mode answers` run (~150 calls) for the
+  "+ router" README row; the step 13 partial run is kept as it is in the README.
+- Next: step 15 (NES and WorkSafe ingestion).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon

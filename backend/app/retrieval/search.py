@@ -135,6 +135,21 @@ def search(
     return rerank_fn(query, hits, k=k) if rerank else hits
 
 
+_CLAUSES_SQL = f"""
+    WITH {_LATEST}
+    SELECT c.id, l.source_id, c.clause_ref, c.heading, c.content, c.is_rate_table
+    FROM chunks c JOIN latest l ON l.id = c.document_id
+    WHERE split_part(c.clause_ref, '#', 1) = ANY(%(refs)s)
+    ORDER BY c.id"""
+
+
+def clause_hits(conn: psycopg.Connection, award: str, refs: list[str]) -> list[Hit]:
+    """The chunks of the given clauses (every "#n" part), latest version, document order. Used
+    to cite the pay table a pay-tool answer came from."""
+    rows = conn.execute(_CLAUSES_SQL, {"award": award, "refs": refs}).fetchall()
+    return [Hit(*r, score=1.0) for r in rows]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("query")
