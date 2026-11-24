@@ -9,10 +9,10 @@ Victoria guidance, and cites the exact source every time (for example `MA000009:
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–18 of 22 are done. Four awards, the NES and 12 WorkSafe
+> Work in progress: build steps 1–19 of 22 are done. Four awards, the NES and 12 WorkSafe
 > pages; retrieval with a cross-encoder re-ranker, cited answers (`POST /chat`), exact pay
 > rates from a structured tool, guardrails with an injection classifier, the full
-> evaluation work, Langfuse tracing and a React web UI; hardening, CI and Azure come next.
+> evaluation work, Langfuse tracing, a React web UI and rate limits; CI and Azure come next.
 
 ## How it works
 
@@ -165,6 +165,31 @@ A small React + TypeScript + Tailwind page (`frontend/`) over `POST /chat`:
   sent together with the original question;
 - answers are rendered as plain text, never HTML (they come from a language model; a test
   checks that `<img onerror=…>` stays text).
+
+## Hardening
+
+Limits on what one request, one client and one day can cost (OWASP LLM10, unbounded
+consumption):
+
+| Limit | Default | What happens |
+|---|---|---|
+| Question length | 1,000 characters | 422 before any work |
+| Per client | 10 a minute, 100 a day | 429 with `Retry-After`; no search, LLM call or DB write |
+| Whole service | 400 questions a day | 429; below the Gemini free tier's ~480 a day, so the demo never fails mid-conversation |
+| LLM reply | 2,048 tokens | `max_tokens` on every call |
+| LLM time | 30 s an attempt, 45 s in total | retries (busy, rate-limited, timed out) stop at the deadline; then 503 |
+| Database connect | 10 s | fails instead of hanging |
+
+Before the deadline, three 60-second attempts plus backoff could hold a request open for over
+three minutes. The limiter is about 60 lines in `app/ratelimit.py` (in memory, per process:
+right for one small container; several replicas would need Redis). CORS is off unless
+`CORS_ORIGINS` lists the web UI's origin, with no credentials and only `GET`/`POST`.
+
+Logs are JSON, one line per request and one per answer, with fields such as `route`,
+`status`, `latency_ms` and `request_id` (the Langfuse trace id). The question, the answer and
+client IPs are never logged: a client is a salted hash, enough to spot one client hammering
+the API. Uvicorn's access log (raw IPs) is switched off. Tests check all of this, including a
+model that never answers (`tests/test_hardening.py`).
 
 ## Observability
 

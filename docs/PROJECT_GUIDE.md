@@ -300,7 +300,7 @@ measured, then changed the platform without throwing away any of the code:
 | 16 | Prompt Guard classifier | Done, with ProtectAI DeBERTa v2 (ONNX): catches 7 attacks the regex misses; 2 of 24 look-alikes blocked |
 | 17 | Observability (Langfuse) | Done (one trace per request, 8 typed steps; request_id joins trace, response and guardrail events) |
 | 18 | Frontend | Done (React + Vite + Tailwind: route badges, citation panel, award filter, clarify follow-ups; checked against the local API) |
-| 19 | Hardening (rate limits, timeouts) | |
+| 19 | Hardening (rate limits, timeouts) | Done (per-client + daily 429 limits, 45 s LLM deadline, CORS allow-list, JSON logs without PII) |
 | 20 | CI on GitHub Actions | |
 | 21 | Deploy to Azure | |
 | 22 | Portfolio polish (README, demo GIF) | |

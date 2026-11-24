@@ -441,7 +441,27 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   the scratchpad, not a dependency): desktop light, phone dark, no horizontal overflow, no
   console errors. Fixed from screenshots: phone header squeeze, long heading paths, favicon
   404. Frontend 25 tests; backend 691 tests pass.
-- Next: step 19 (hardening: rate limits, timeouts; see plan).
+- Step 19 (hardening): done. `app/ratelimit.py` `ChatLimiter` (sliding windows in memory,
+  thread lock, injectable clock; in-house instead of slowapi): per client IP
+  RATE_LIMIT_PER_MINUTE 10 / RATE_LIMIT_PER_DAY 100, global CHAT_DAILY_BUDGET 400 (below
+  Gemini's ~480/day); refused requests are not counted and cost nothing; /chat -> 429 +
+  Retry-After + friendly detail (`RATE_LIMIT_TEXT`); /health not limited; per process (one
+  container; replicas would need Redis). `tests/conftest.py` resets the limiter per test.
+  LLM: `llm_timeout_s` 60 -> 30 per attempt, new `llm_deadline_s` 45 for the whole call
+  (per-attempt timeout = min(timeout, time left); no retry if backoff would pass deadline
+  - 1 s); `chat(..., clock=)` for tests. Before: 3 x 60 s + backoff > 3 min.
+  DB `connect()` sets `connect_timeout` (DB_CONNECT_TIMEOUT_S 10). CORS: `setup_cors(app,
+  CORS_ORIGINS)`, off when empty (dev uses the Vite proxy), no credentials, GET/POST,
+  exposes X-Request-ID + Retry-After. Logs: `app/logs.py` JSON lines (extra= fields at top
+  level), `client_hash` = sha256(random per-process salt + IP)[:12]; middleware logs one
+  "request" line (method, path, status, latency, request_id, client_hash); pipeline logs a
+  "chat" line (request_id, route, latency, guardrails, citation count); never question,
+  answer or raw IP; uvicorn.access disabled; httpx at WARNING. Uvicorn's own startup lines
+  stay plain text. `tests/test_hardening.py` (15): limiter windows, 429 + Retry-After
+  through /chat, timeout path (every attempt hangs -> stops at 45 s -> 503), CORS allow /
+  deny / off, logs without question/answer/IP. Live: 10 x 200 then 429 (Retry-After 44),
+  JSON lines checked. Frontend 429 message test. 710 backend + 26 frontend tests pass.
+- Next: step 20 (CI on GitHub Actions; Postgres service must be pg18; see plan).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon

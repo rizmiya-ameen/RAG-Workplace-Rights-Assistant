@@ -31,6 +31,16 @@ describe("askQuestion", () => {
     );
   });
 
+  it("shows the API's rate-limit message (429)", async () => {
+    const fetchFn = reply(429, {
+      detail: "You're sending questions quickly. Please wait a moment and try again.",
+    });
+    await expect(askQuestion("q", null, fetchFn)).rejects.toMatchObject({
+      status: 429,
+      message: expect.stringContaining("wait a moment"),
+    });
+  });
+
   it("does not show FastAPI validation details", async () => {
     const fetchFn = reply(422, { detail: [{ msg: "String should have at most 1000 characters" }] });
     await expect(askQuestion("q", null, fetchFn)).rejects.toMatchObject({
