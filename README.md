@@ -11,10 +11,10 @@ Victoria guidance, and cites the exact source every time (for example `MA000009:
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–19 of 22 are done. Four awards, the NES and 12 WorkSafe
+> Work in progress: build steps 1–20 of 22 are done. Four awards, the NES and 12 WorkSafe
 > pages; retrieval with a cross-encoder re-ranker, cited answers (`POST /chat`), exact pay
 > rates from a structured tool, guardrails with an injection classifier, the full
-> evaluation work, Langfuse tracing, a React web UI and rate limits; CI and Azure come next.
+> evaluation work, Langfuse tracing, a React web UI, rate limits and CI; deployment to Azure comes next.
 
 ## How it works
 
@@ -352,6 +352,12 @@ GitHub Actions (`.github/workflows/ci.yml`) on every push to `main` and every pu
   re-ranker hit@6 drops below 0.94 (it is 0.96); the results table goes to the run summary.
 - **Web UI:** type check, Vitest, production build.
 - **Docker:** builds the API image and checks that `/health` answers.
+
+The first CI run found a bug the laptop never showed: on a database holding only a
+20-chunk test award, the full-text search's common-word filter dropped every word. The
+filter now needs at least 200 chunks, and the search tests run in an empty schema so the
+real data can't hide such a bug again. On CI the retrieval gate gives the same numbers as
+on Neon (hit@6 0.96, MRR 0.832).
 
 No secrets and no LLM calls in CI: the answer eval (faithfulness, red-team on real answers)
 stays a manual run because of the Gemini free-tier quota.

@@ -461,7 +461,7 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   through /chat, timeout path (every attempt hangs -> stops at 45 s -> 503), CORS allow /
   deny / off, logs without question/answer/IP. Live: 10 x 200 then 429 (Retry-After 44),
   JSON lines checked. Frontend 429 message test. 710 backend + 26 frontend tests pass.
-- Step 20 (CI): workflow written, green PR run pending. `.github/workflows/ci.yml`, on push
+- Step 20 (CI): done, green on PR #1 (2026-11-24). `.github/workflows/ci.yml`, on push
   to main, PRs and manual dispatch; no secrets, no LLM. Jobs: `backend` (setup-uv 0.13.8 with
   cache, `uv sync` frozen, ruff check + format --check, ONNX model cache keyed on
   config.py, `app.db.init` against service `pgvector/pgvector:pg18` (fails if unreachable,
@@ -471,7 +471,17 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   build); `docker` (buildx with GHA cache, `/health` smoke test, image size to summary).
   `run_eval --min-hit` + `gate_failures()` (test) added. Local gate run on Neon: hit@6
   0.96, passed, 6 min (CI runners are faster). `ruff format` fixed app/main.py.
-  To finish: push a branch, open a PR, CI green.
+  First PR run: API job failed on test_hybrid_adds_full_text_matches. CI's empty DB held
+  only the 20-chunk test award; "disconnect" in 40% > MAX_DF, so every word was dropped and
+  full text found nothing (locally hidden: tests ran next to Neon's ~1,400 real chunks, and
+  tied vector distances put 13A in the hybrid top 3 by luck). Fix: common-word filter only
+  with >= MIN_DF_CHUNKS (200) chunks (production unchanged; /chat doesn't use full text);
+  test_search's `conn` now creates an empty schema per test (SET LOCAL search_path, rolled
+  back); regression tests for small/large corpus. Second run green: API 11 min (pytest 704
+  passed + 9 classifier skips, retrieval gate vector+rerank hit@1 0.77 / hit@6 0.96 / MRR
+  0.832, identical to Neon), Docker build + /health 50 s, web UI 18 s. 713 backend tests.
+  `gh` CLI installed and logged in (Program Files\GitHub CLI); repo is private, so the
+  public API can't read runs.
 - Next: step 21 (deploy to Azure; see plan). Notes for it: Dockerfile installs dev deps
   (use `uv sync --no-dev`), models download on first request (bake bge + re-ranker into
   the image or warm up at start; injection classifier is 740 MB), CORS_ORIGINS = UI origin,
