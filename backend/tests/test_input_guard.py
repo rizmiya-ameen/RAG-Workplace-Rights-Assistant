@@ -137,9 +137,12 @@ def test_redacted_question_still_answers():
 
 
 @pytest.mark.parametrize(
-    "row", [r for r in REDTEAM if not r.get("known_gap")], ids=lambda r: r["id"]
+    "row",
+    [r for r in REDTEAM if not (r.get("known_gap") or r.get("needs_classifier"))],
+    ids=lambda r: r["id"],
 )
 def test_redteam_input_route(row):
+    """Regex layer only (classifier off in tests); classifier rows: test_classifier.py."""
     assert input_route(row["question"]) == row["expected_route"]
 
 

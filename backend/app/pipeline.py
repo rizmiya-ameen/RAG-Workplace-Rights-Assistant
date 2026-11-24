@@ -53,6 +53,13 @@ BLOCKED_TEXT = (
 )
 ROUTE_TEXT = {
     "injection": BLOCKED_TEXT,
+    # The classifier also flags some honest phrasings ("Ignore my last question. ..."), so its
+    # message asks for the question on its own instead of accusing the user.
+    "injection:classifier": (
+        "Your message reads like an instruction to the assistant, so I didn't act on it. If "
+        "you have a question about pay, hours, leave or safety at work, please ask it on its "
+        'own, for example: "What is the casual loading in hospitality?"'
+    ),
     "evasion": (
         "I can't help with getting around award obligations. Employers can get free help to "
         "comply from the Fair Work Ombudsman (13 13 94, fairwork.gov.au)."
@@ -166,9 +173,12 @@ def answer_question(
     if checked.redactions:
         events.append(("input", "pii_redacted", checked.redactions))
     if checked.route != "pass":
-        events.append(("input", checked.rule or checked.route, {}))
+        detail = {"score": checked.score} if checked.score is not None else {}
+        events.append(("input", checked.rule or checked.route, detail))
         kind = (checked.rule or "").split(":", 1)[0]
-        text = ROUTE_TEXT.get(kind, ROUTE_TEXT.get(checked.route, BLOCKED_TEXT))
+        text = ROUTE_TEXT.get(checked.rule or "") or ROUTE_TEXT.get(
+            kind, ROUTE_TEXT.get(checked.route, BLOCKED_TEXT)
+        )
         route: Route = checked.route  # type: ignore[assignment]
         return respond(text, route, [])
 

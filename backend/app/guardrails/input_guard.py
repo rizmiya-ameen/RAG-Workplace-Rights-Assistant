@@ -5,10 +5,13 @@ Order (first match decides the route):
 2. normalise (NFKC, zero-width and control characters removed, whitespace collapsed)
 3. PII redaction (email, phone, TFN with checksum, BSB, account number) -> question continues
    with placeholders such as [EMAIL]; values are never logged
-4. prompt-injection patterns         -> blocked  (OWASP LLM01; Prompt Guard classifier: step 16)
+4. prompt-injection patterns         -> blocked  (OWASP LLM01)
 5. evasion patterns                  -> blocked  ("without getting caught", fake timesheets)
 6. personal advice / dispute         -> refer    (Fair Work Ombudsman)
-7. scope: no workplace words at all  -> out_of_scope
+7. injection classifier (step 16)    -> blocked  (app/guardrails/classifier.py: catches
+   rephrased attacks the patterns miss, e.g. base64 or letter-spaced instructions; runs on
+   the normalised, redacted text; score >= injection_threshold)
+8. scope: no workplace words at all  -> out_of_scope
 
 Patterns are deliberately narrow: a worker asking "Can my employer avoid paying penalty
 rates?" or "Can my boss ignore my roster request?" must still get an answer. Every rule has
@@ -17,6 +20,7 @@ tests, and eval/redteam.jsonl holds attack rows plus look-alike legitimate quest
 
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -33,6 +37,7 @@ class InputResult:
     text: str  # normalised, PII-redacted question (what retrieval and the LLM see)
     rule: str | None = None  # rule that set the route, e.g. "injection:ignore_instructions"
     redactions: dict[str, int] = field(default_factory=dict)  # PII type -> count
+    score: float | None = None  # injection classifier score, when it ran
 
 
 # --- normalisation ------------------------------------------------------------------------
@@ -239,7 +244,19 @@ def find_injection(text: str) -> str | None:
     return None
 
 
-def check_input(question: str) -> InputResult:
+def _default_classifier() -> Callable[[str], float] | None:
+    from app.config import get_settings
+
+    if not get_settings().injection_classifier:
+        return None
+    from app.guardrails.classifier import injection_score
+
+    return injection_score
+
+
+def check_input(question: str, *, classifier: Callable[[str], float] | None = None) -> InputResult:
+    """`classifier` returns an injection probability; default: the ONNX classifier when
+    settings.injection_classifier is on (tests pass a fake)."""
     if len(question) > MAX_CHARS:
         return InputResult("blocked", "", rule="length")
     text = normalise(question)
@@ -249,6 +266,14 @@ def check_input(question: str) -> InputResult:
     for kind, name, pattern in _COMPILED:
         if pattern.search(text):
             return InputResult(_ROUTE_FOR[kind], text, f"{kind}:{name}", redactions)
+    scorer = classifier or _default_classifier()
+    score = None
+    if scorer is not None:
+        from app.config import get_settings
+
+        score = round(scorer(text), 4)
+        if score >= get_settings().injection_threshold:
+            return InputResult("blocked", text, "injection:classifier", redactions, score)
     if not _SCOPE.search(text):
-        return InputResult("out_of_scope", text, "scope:no_workplace_terms", redactions)
-    return InputResult("pass", text, None, redactions)
+        return InputResult("out_of_scope", text, "scope:no_workplace_terms", redactions, score)
+    return InputResult("pass", text, None, redactions, score)

@@ -68,8 +68,8 @@ def load_redteam(path: Path = REDTEAM_PATH) -> list[dict]:
     return load_golden(path)
 
 
-def input_route(question: str) -> str:
-    route = check_input(question).route
+def input_route(question: str, classifier=None) -> str:
+    route = check_input(question, classifier=classifier).route
     return "rag" if route == "pass" else route
 
 
@@ -126,14 +126,17 @@ def run_routes(rows: list[dict], golden: list[dict]) -> dict:
     }
 
 
-def run_redteam_input(rows: list[dict], golden: list[dict]) -> dict:
+def run_redteam_input(rows: list[dict], golden: list[dict], classifier=None) -> dict:
+    """`classifier`: injection scorer for the input guard (default: per settings, i.e. the
+    ONNX classifier in a normal run)."""
     results = [
         {
             "id": r["id"],
             "category": r["category"],
             "expected": r["expected_route"],
-            "actual": input_route(r["question"]),
+            "actual": input_route(r["question"], classifier),
             "known_gap": bool(r.get("known_gap")),
+            "needs_classifier": bool(r.get("needs_classifier")),
         }
         for r in rows
     ]
@@ -141,7 +144,7 @@ def run_redteam_input(rows: list[dict], golden: list[dict]) -> dict:
     legit = [r for r in scored if r["expected"] == "rag"]
     attacks = [r for r in scored if r["expected"] != "rag"]
     golden_blocked = [
-        g["id"] for g in golden if g["expected"] and input_route(g["question"]) != "rag"
+        g["id"] for g in golden if g["expected"] and input_route(g["question"], classifier) != "rag"
     ]
     metrics = {
         "n": len(scored),
@@ -151,6 +154,11 @@ def run_redteam_input(rows: list[dict], golden: list[dict]) -> dict:
         "golden_false_positives": len(golden_blocked),
         "known_gaps_caught": sum(r["actual"] == r["expected"] for r in results if r["known_gap"]),
         "known_gaps": sum(r["known_gap"] for r in results),
+        "classifier_only_caught": sum(
+            r["actual"] == r["expected"] for r in scored if r["needs_classifier"]
+        ),
+        "classifier_only_rows": sum(r["needs_classifier"] for r in scored),
+        "false_positives": [r["id"] for r in legit if r["actual"] != "rag"],
     }
     return {
         "metrics": metrics,

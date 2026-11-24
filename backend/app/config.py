@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # Faithfulness judge in the eval; empty = same model as answers.
     judge_model: str = ""
 
+    # Prompt-injection classifier in the input guard (step 16). Threshold: the model's usual
+    # 0.5; attacks scored 0.975-1.0 and the 115 golden/route questions all 0.000, but a few
+    # legitimate phrasings ("Ignore my last question. ...") also score ~0.99 (README).
+    injection_classifier: bool = True
+    injection_threshold: float = 0.5
+
     # Retrieval for /chat: "vector" won the step 9 eval (hit@6 0.90 vs 0.80 hybrid).
     retrieval_mode: str = "vector"
     retrieval_k: int = 6
