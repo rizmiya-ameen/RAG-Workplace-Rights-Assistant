@@ -1,6 +1,7 @@
 """Retrieval tests. DB tests store fixture chunks under TEST-* source ids with one-hot
 embeddings (chunk i points along axis i), so vector ranking is predictable, and roll back."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import psycopg
@@ -10,7 +11,7 @@ from app.db.conn import apply_schema, connect
 from app.embeddings import DIMS
 from app.ingestion.ingest import ingest_document
 from app.ingestion.parse_award import parse_award_html
-from app.retrieval.search import RRF_K, rrf, search
+from app.retrieval.search import CANDIDATES, RRF_K, rrf, search
 
 FIXTURE = Path(__file__).parent / "fixtures" / "MA000002_excerpt.html"
 AWARD = "TEST-SEARCH"
@@ -116,3 +117,23 @@ def test_hybrid_adds_full_text_matches(conn, doc):
 def test_unknown_mode_is_refused(conn):
     with pytest.raises(ValueError, match="mode must be one of"):
         search(conn, "q", mode="bm25", embed=axis0)
+
+
+def test_rerank_reorders_the_candidate_pool(conn, doc):
+    # The vector query points at chunk 0; the fake re-ranker prefers clause 13A, which is
+    # outside the vector top 6 but inside the 24 candidates.
+    seen = {}
+
+    def fake_rerank(query, hits, *, k):
+        seen["n"] = len(hits)
+        ordered = sorted(hits, key=lambda h: not h.clause_ref.startswith("13A"))
+        return [replace(h, rerank_score=1.0) for h in ordered[:k]]
+
+    plain = search(conn, "q", mode="vector", award=AWARD, embed=axis0)
+    hits = search(
+        conn, "q", mode="vector", award=AWARD, embed=axis0, rerank=True, rerank_fn=fake_rerank
+    )
+    assert not any(h.clause_ref.startswith("13A") for h in plain)
+    assert seen["n"] == min(CANDIDATES, len(doc))
+    assert hits[0].clause_ref.startswith("13A") and len(hits) == 6
+    assert all(h.rerank_score == 1.0 for h in hits)

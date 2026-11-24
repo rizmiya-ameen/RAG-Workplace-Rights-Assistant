@@ -198,3 +198,19 @@ def test_pacing_wait_is_not_counted_as_latency(monkeypatch):
     item = {"id": "x", "question": "q"} | ROW
     row = run_one(None, item, "redteam", rec, do_judge=False)
     assert row["latency_ms"] == pytest.approx(100.0)
+
+
+def test_suggest_gate_keeps_every_found_answer():
+    from app.eval.run_eval import suggest_gate
+
+    rows = [
+        {"answerable": True, "rank": 1, "top_rerank": 4.0},
+        {"answerable": True, "rank": 3, "top_rerank": -2.0},  # lowest found: -2.0
+        {"answerable": True, "rank": None, "top_rerank": -6.0},  # retrieval miss
+        {"answerable": False, "rank": None, "top_rerank": -9.0},
+        {"answerable": False, "rank": None, "top_rerank": -2.5},  # within the margin
+    ]
+    gate = suggest_gate(rows)
+    assert gate["threshold"] == -3.0
+    assert gate["answerable_gated"] == 1 and gate["decline_gated"] == 1
+    assert suggest_gate([{"answerable": True, "rank": 1, "top_rerank": None}]) is None

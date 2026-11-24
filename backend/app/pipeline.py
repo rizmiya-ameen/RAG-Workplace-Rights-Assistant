@@ -153,7 +153,14 @@ def answer_question(
         return respond(text, route, [])
 
     # 2. Retrieval on the redacted question, then the context guard.
-    hits = search_fn(conn, checked.text, mode=s.retrieval_mode, award=award, k=s.retrieval_k)
+    hits = search_fn(
+        conn,
+        checked.text,
+        mode=s.retrieval_mode,
+        award=award,
+        k=s.retrieval_k,
+        rerank=s.retrieval_rerank,
+    )
     docs = _documents(conn, {h.source_id for h in hits}) if hits else {}
     context = check_context(hits, {sid: url for sid, (_, url) in docs.items()})
     for citation, reason in context.dropped.items():
@@ -162,6 +169,13 @@ def answer_question(
         events.append(("context", "source_cleaned", {"count": context.cleaned}))
     hits = context.hits
     if not hits:
+        return respond(INSUFFICIENT_TEXT, "insufficient_context", [])
+
+    # Relevance gate: if even the best clause scores low with the cross-encoder, the sources
+    # don't cover the question; say so without calling the LLM (threshold tuned in step 13).
+    top = hits[0].rerank_score
+    if top is not None and top < s.relevance_threshold:
+        events.append(("context", "relevance_gate", {"top_score": round(top, 2)}))
         return respond(INSUFFICIENT_TEXT, "insufficient_context", [])
 
     # 3. Generation.

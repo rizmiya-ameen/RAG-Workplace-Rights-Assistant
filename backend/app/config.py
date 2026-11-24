@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     data_dir: Path = REPO_DIR / "data"
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"  # 384 dims; must match chunks.embedding
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"  # cross-encoder, ~80 MB (step 13)
+    # Each batch is padded to its longest clause, so small batches are faster: 24 clauses took
+    # ~1.5 s at batch 2 vs ~3.5 s at batch 24 on the dev laptop (4-core Ryzen 5 3500U).
+    reranker_batch_size: int = 2
     embedding_batch_size: int = 16  # small batches keep memory low on the 7 GB laptop
     # ONNX model files; repo-level .cache/ (git-ignored, on E:, not the full C: drive).
     model_cache_dir: Path = REPO_DIR / ".cache" / "models"
@@ -46,6 +50,14 @@ class Settings(BaseSettings):
     # Retrieval for /chat: "vector" won the step 9 eval (hit@6 0.90 vs 0.80 hybrid).
     retrieval_mode: str = "vector"
     retrieval_k: int = 6
+    # Cross-encoder over the 24 candidates (step 13), and the relevance gate on its top score:
+    # below the threshold -> "insufficient context" without an LLM call.
+    retrieval_rerank: bool = True
+    # -9.7 = lowest top score of an answerable question whose clause was found (hosp-22,
+    # -8.71) minus a 1.0 margin. Scores overlap a lot (visa question +0.31, a found answer
+    # -8.71), so the gate only catches clearly unrelated questions; the LLM's
+    # insufficient_context answer handles the rest (step 12: decline accuracy 1.00).
+    relevance_threshold: float = -9.7
 
 
 @lru_cache

@@ -21,6 +21,7 @@ import psycopg
 
 from app.db.conn import connect
 from app.embeddings import embed_query
+from app.retrieval.rerank import rerank as rerank_hits
 
 CANDIDATES = 24  # per retriever, before fusion (and later, before re-ranking)
 RRF_K = 60
@@ -74,6 +75,7 @@ class Hit:
     is_rate_table: bool
     score: float  # vector: cosine similarity; hybrid: RRF score
     distance: float | None = None  # cosine distance, if the vector retriever found it
+    rerank_score: float | None = None  # cross-encoder logit, if re-ranked (step 13)
 
     @property
     def citation(self) -> str:
@@ -108,23 +110,29 @@ def search(
     award: str | None = None,
     k: int = 6,
     candidates: int = CANDIDATES,
+    rerank: bool = False,
     embed: Callable[[str], list[float]] = embed_query,
+    rerank_fn: Callable[..., list[Hit]] = rerank_hits,
 ) -> list[Hit]:
+    """Top k hits. With rerank=True the retriever's top `candidates` are re-ordered by the
+    cross-encoder and the best k returned (each with rerank_score)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
     vec_rows = _vector(conn, embed(query), award, candidates)
     rows = {r[0]: r for r in vec_rows}
     distance = {r[0]: r[6] for r in vec_rows}
 
+    keep = candidates if rerank else k
     if mode == "vector":
-        ranked = [(r[0], 1.0 - r[6]) for r in vec_rows[:k]]
+        ranked = [(r[0], 1.0 - r[6]) for r in vec_rows[:keep]]
     else:
         text_rows = _text(conn, query, award, candidates)
         rows.update({r[0]: r for r in text_rows if r[0] not in rows})
         fused = rrf([[r[0] for r in vec_rows], [r[0] for r in text_rows]])
-        ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
+        ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:keep]
 
-    return [Hit(*rows[cid][:6], score=score, distance=distance.get(cid)) for cid, score in ranked]
+    hits = [Hit(*rows[cid][:6], score=score, distance=distance.get(cid)) for cid, score in ranked]
+    return rerank_fn(query, hits, k=k) if rerank else hits
 
 
 def main() -> None:
@@ -133,14 +141,18 @@ def main() -> None:
     ap.add_argument("--mode", choices=MODES, default="hybrid")
     ap.add_argument("--award", help="source_id filter, e.g. MA000009")
     ap.add_argument("-k", type=int, default=6)
+    ap.add_argument("--rerank", action="store_true", help="cross-encoder over the candidates")
     ap.add_argument("--full", action="store_true", help="print whole chunks")
     args = ap.parse_args()
 
     with connect() as conn:
-        hits = search(conn, args.query, mode=args.mode, award=args.award, k=args.k)
+        hits = search(
+            conn, args.query, mode=args.mode, award=args.award, k=args.k, rerank=args.rerank
+        )
     for i, h in enumerate(hits, 1):
         dist = f"dist {h.distance:.3f}" if h.distance is not None else "dist  -   "
-        print(f"{i}. {h.citation:16} score {h.score:.4f}  {dist}  [{h.heading[:70]}]")
+        rr = f"  rerank {h.rerank_score:6.2f}" if h.rerank_score is not None else ""
+        print(f"{i}. {h.citation:16} score {h.score:.4f}  {dist}{rr}  [{h.heading[:60]}]")
         body = h.content if args.full else h.content.replace("\n", " ")[:160]
         print(f"   {body}")
 

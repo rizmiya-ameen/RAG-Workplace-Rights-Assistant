@@ -8,16 +8,16 @@ and cites the exact clause every time (for example `MA000009:28.2`).
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–12 of 22 are done. Retrieval, cited answers
-> (`POST /chat`), guardrails and the full answer evaluation work; the re-ranker, the pay-rate
-> tool and the web UI come next.
+> Work in progress: build steps 1–13 of 22 are done. Retrieval with a cross-encoder
+> re-ranker, cited answers (`POST /chat`), guardrails and the full answer evaluation work;
+> the pay-rate tool and the web UI come next.
 
 ## How it works
 
 ```
 user -> input guard -> router -> { rag | pay_rate | clarify | refer | out_of_scope }
-rag:      hybrid search (pgvector + Postgres full text, RRF) -> cross-encoder re-rank
-          -> relevance gate -> LLM (JSON + citations)
+rag:      vector search (pgvector; hybrid with full text is an option) -> top 24
+          -> cross-encoder re-rank -> top 6 -> relevance gate -> LLM (JSON + citations)
 pay_rate: SQL on pay_rates -> LLM only phrases the tool result
 all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -> user
 ```
@@ -91,12 +91,30 @@ Retrieval, top 6 results, award filter applied when the question names an indust
 |---|---|---|---|---|---|
 | Vector only | 0.64 | 0.90 | 0.735 | 0.98 | 50 ms |
 | Hybrid (vector + full text, RRF) | 0.54 | 0.80 | 0.641 | 0.98 | 73 ms |
+| **Vector + re-ranker** (used by `/chat`) | **0.83** | **0.98** | **0.884** | 0.98 | 2.7 s |
+| Hybrid + re-ranker | 0.85 | 0.98 | 0.902 | 0.98 | ~5 s* |
 
 Hybrid search scored lower than vector search alone. Full text finds exact references such
 as "clause 28.2", but in plain-language questions its keyword matches push the best semantic
 hits down the list. Both modes have the right clause among the top 24 candidates for 58 of 59
-questions, so the cross-encoder re-ranker (next on the plan) works from the same pool either
-way.
+questions, so the re-ranker works from the same pool either way.
+
+The re-ranker (`ms-marco-MiniLM-L-6-v2`, a cross-encoder via fastembed/ONNX) reads the
+question and each of the 24 candidate clauses together and re-orders them. It put the right
+clause first for 83% of questions instead of 64%, and recovered five of the six top-6 misses
+(the right-to-disconnect clause moved from rank 23 to 1). Vector + re-ranker is the default:
+it matches hybrid on hit@6, is simpler, and hybrid lost one question's clause from the pool.
+
+The cost is latency on CPU. Each batch is padded to its longest clause, so batches of 2 took
+~1.5 s for 24 clauses on the dev laptop against ~3.5 s for one batch of 24. (*Hybrid +
+re-ranker was measured before that change.)
+
+**Relevance gate.** If the best re-rank score is below −9.7, the app answers "insufficient
+context" without calling the LLM. The scores overlap too much for a tighter gate: a found
+answer scored −8.7 (till shortfalls) while an out-of-scope visa question scored +0.3, because
+the model rates topical similarity, not whether the clause answers the question. So the
+threshold is the lowest found answer minus a 1.0 margin; it stops only clearly unrelated
+questions, and the model's own "insufficient context" reply handles the rest.
 
 ### Full answer evaluation
 
@@ -107,6 +125,14 @@ and decides whether every statement is supported.
 | Version | hit@6 | Answer rate | Expected clause cited | Faithfulness | Decline accuracy | Red-team pass | p50 / p95 latency | Cost |
 |---|---|---|---|---|---|---|---|---|
 | Vector + guardrails | 0.90 | 0.90 (53/59) | 0.98 | 1.00 (53/53) | 1.00 (10/10) | 1.00 (44/44) | 1.5 s / 2.5 s | $0 (free tier; 137 LLM calls, 198k tokens) |
+| + re-ranker and relevance gate (partial: 69 of 115 questions†) | 0.98 | 1.00 (38/38) | 1.00 | 0.97 (32/33) | 1.00 (2/2) | 1.00 (29/29) | 2.9 s / 5.7 s | $0 |
+
+† The run stopped at the free tier's daily request limit (HTTP 429) after 69 questions;
+it is resumable and the row will be completed. The four earlier retrieval misses it reached
+(hosp-02, hosp-07, hosp-10, hosp-22) are now answered, cite the expected clause and pass the
+judge. The one flagged answer (hosp-20) is a strict call: it says salaried managers don't
+get annual leave loading, which clause 25.2(g) does say, but in clumsy wording. Latency is
+higher because the re-ranker runs on CPU (~1.5 s).
 
 - **Answer rate:** answerable questions that got a cited answer. Five of the six misses are
   retrieval misses (the right clause was not in the top 6, e.g. the right-to-disconnect

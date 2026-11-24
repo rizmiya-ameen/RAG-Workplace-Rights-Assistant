@@ -18,8 +18,8 @@ Clerks (MA000002). Then NES and WorkSafe Victoria guidance.
 
 ```
 user -> input guard -> router -> { rag | pay_rate | clarify | refer | out_of_scope }
-rag:      hybrid search (pgvector + Postgres FTS, RRF) -> cross-encoder re-rank
-          -> relevance gate -> LLM (JSON + citations)
+rag:      vector search (hybrid FTS+RRF optional) -> top 24 -> cross-encoder re-rank
+          -> top 6 -> relevance gate -> LLM (JSON + citations)
 pay_rate: SQL on pay_rates -> LLM only phrases the tool result
 all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -> user
 ```
@@ -264,9 +264,27 @@ writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
   skips am/pm). Prompt also says to cite without sub-paragraphs. Remaining misses: hosp-02,
   hosp-07, hosp-10, hosp-22, retail-10 (retrieval: right clause not in top 6), all-02
   (clarify), ff-07 cites Schedule A instead of the expected clause. 460 tests pass.
-- Next: step 13 (re-ranker: ms-marco-MiniLM-L-6-v2 via fastembed over the 24 candidates;
-  tune the relevance gate on the golden set; README row).
-- Decisions: LLM = Gemini free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional
-  offline. DB = Neon
+- Step 13 (re-ranker): done. `app/retrieval/rerank.py` (`Xenova/ms-marco-MiniLM-L-6-v2`
+  via fastembed TextCrossEncoder, lazy, scores = logits on heading + content);
+  `search(..., rerank=True)` re-orders the top 24 candidates and returns k with
+  `rerank_score`. `/chat` = vector + rerank (`retrieval_rerank=True`). Retrieval eval
+  variants vector / hybrid / vector+rerank / hybrid+rerank: vector+rerank hit@1 0.83, hit@6
+  0.98, MRR 0.884 (vector alone 0.64 / 0.90 / 0.735); hybrid+rerank 0.85 / 0.98 / 0.902 but
+  lost hosp-22 from its pool, so vector+rerank stays (simpler). Only miss: retail-10 (not in
+  24 candidates). CPU latency: batches pad to the longest clause, so `reranker_batch_size=2`
+  (~1.5 s for 24 clauses vs ~3.5 s at 24). Relevance gate in pipeline: top rerank score <
+  `relevance_threshold` (-9.7) -> insufficient_context, no LLM call, event
+  `context/relevance_gate` with the score. Threshold = lowest found answer (hosp-22 -8.71)
+  minus 1.0 (`suggest_gate` in run_eval). Scores overlap badly (visa decline +0.31), so the
+  gate only stops clearly unrelated questions; the LLM's insufficient_context does the rest.
+  Answer eval with rerank stopped at Gemini's daily quota (429) after 69/115 questions
+  (eval/results/answers_20261124T053930Z.jsonl): answer rate 38/38, citation 1.00,
+  faithfulness 32/33 (hosp-20: strict judge, claim is in 25.2(g)), red-team 29/29, p50 2.9
+  s. TODO: `--resume ../eval/results/answers_20261124T053930Z.jsonl` after the quota resets,
+  then complete the README row. 467 tests pass.
+- Next: step 14 (router, pay tool, clarify route).
+- Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
+  free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
+  stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon
   Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables
   parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.

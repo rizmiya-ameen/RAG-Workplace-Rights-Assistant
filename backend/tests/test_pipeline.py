@@ -3,6 +3,7 @@ Clause text comes from the verbatim MA000009 fixture."""
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -268,3 +269,31 @@ def test_made_up_amount_is_removed_from_the_answer(hits):
     assert r.route == "rag"
     assert "$40.00" not in r.answer and "25%" in r.answer
     assert ("output", "amount_removed") in conn.events
+
+
+def _scored(hits, *scores):
+    return [replace(h, rerank_score=x) for h, x in zip(hits, scores, strict=True)]
+
+
+def test_relevance_gate_stops_weak_matches_before_the_llm(hits, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "relevance_threshold", -5.0)
+    r, conn = _ask(_scored(hits, -7.5, -9.0), _no_llm)
+    assert r.route == "insufficient_context" and r.answer == INSUFFICIENT_TEXT
+    assert r.citations == [] and ("context", "relevance_gate") in conn.events
+    assert "-7.5" in " ".join(conn.logged)  # the score is logged, not the question
+
+    r, conn = _ask(_scored(hits, 3.2, -9.0), _llm())
+    assert r.route == "rag" and ("context", "relevance_gate") not in conn.events
+
+
+def test_chat_retrieval_uses_the_reranker():
+    seen = {}
+
+    def search_fn(conn, query, **kw):
+        seen.update(kw)
+        return []
+
+    answer_question(FakeConn(), "What is the casual loading?", search_fn=search_fn, chat_fn=_no_llm)
+    assert seen["rerank"] is True and seen["k"] == 6

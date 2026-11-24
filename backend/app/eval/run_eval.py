@@ -1,7 +1,7 @@
 """Evaluate the assistant against eval/golden_set.jsonl.
 
-    python -m app.eval.run_eval --mode retrieval          # vector vs hybrid
-    python -m app.eval.run_eval --mode retrieval --search-modes hybrid --no-save
+    python -m app.eval.run_eval --mode retrieval          # vector / hybrid, +/- re-ranker
+    python -m app.eval.run_eval --mode retrieval --search-modes vector+rerank --no-save
     python -m app.eval.run_eval --mode redteam-input      # input guard routes, no LLM
 
 Retrieval metrics (answerable questions, k = 6):
@@ -13,8 +13,10 @@ A retrieved chunk matches an expected clause if its citation without the "#n" sp
 equals it ("MA000009:18.1#2" matches "MA000009:18.1"). Questions with an award use it as the
 search filter (the router or UI picks the award); the others search all awards.
 
-Decline questions (not in the sources) report the closest cosine distance next to the one
-for answerable questions, to tune the relevance gate later (step 13).
+Variants: vector, hybrid, and each "+rerank" (cross-encoder over the 24 candidates, step 13).
+Decline questions (not in the sources) report the closest cosine distance and, with the
+re-ranker, the top re-rank score next to the answerable ones. `gate` suggests the
+relevance-gate threshold (see suggest_gate).
 
 Red-team input (eval/redteam.jsonl): the input guard's route for every row against
 expected_route ("rag" = passes the guard). Rows marked known_gap are reported separately
@@ -41,6 +43,8 @@ from app.db.conn import connect
 from app.eval.answers import Recorder, answer_metrics, run_one
 from app.guardrails.input_guard import check_input
 from app.retrieval.search import CANDIDATES, MODES, search
+
+VARIANTS = (*MODES, *(f"{m}+rerank" for m in MODES))
 
 GOLDEN_PATH = REPO_DIR / "eval" / "golden_set.jsonl"
 REDTEAM_PATH = REPO_DIR / "eval" / "redteam.jsonl"
@@ -123,15 +127,43 @@ def _percentile(values: list[float], p: float) -> float:
     return ordered[min(len(ordered) - 1, round(p * (len(ordered) - 1)))]
 
 
-def run_retrieval(conn, golden: list[dict], search_mode: str, k: int = K) -> dict:
+def suggest_gate(rows: list[dict], k: int = K) -> dict | None:
+    """Relevance-gate threshold on the top re-rank score: the highest value that still lets
+    through every answerable question whose expected clause is in the top k (gating those
+    would turn a good answer into "insufficient context"), minus a margin of 1.0 logit
+    because 59 questions is a small sample. Reports how many decline questions it stops."""
+    scored = [r for r in rows if r.get("top_rerank") is not None]
+    if not scored:
+        return None
+    found = [r["top_rerank"] for r in scored if r["rank"] is not None and r["rank"] <= k]
+    threshold = round(min(found) - 1.0, 2)
+    answerable = [r for r in scored if r["answerable"]]
+    decline = [r for r in scored if not r["answerable"]]
+    return {
+        "threshold": threshold,
+        "answerable_gated": sum(r["top_rerank"] < threshold for r in answerable),
+        "decline_gated": sum(r["top_rerank"] < threshold for r in decline),
+        "answerable": len(answerable),
+        "decline": len(decline),
+    }
+
+
+def run_retrieval(conn, golden: list[dict], variant: str, k: int = K) -> dict:
     """Retrieves CANDIDATES chunks per question: metrics at k, plus hit@CANDIDATES, the share
     a re-ranker over the candidate pool could still put on top."""
+    mode, _, extra = variant.partition("+")
     rows, ranks, latencies = [], [], []
     top_dist = {"answerable": [], "decline": []}
+    top_rerank = {"answerable": [], "decline": []}
     for item in golden:
         started = time.perf_counter()
         hits = search(
-            conn, item["question"], mode=search_mode, award=item.get("award"), k=CANDIDATES
+            conn,
+            item["question"],
+            mode=mode,
+            award=item.get("award"),
+            k=CANDIDATES,
+            rerank=extra == "rerank",
         )
         latencies.append(1000 * (time.perf_counter() - started))
         retrieved = [h.citation for h in hits]
@@ -139,10 +171,21 @@ def run_retrieval(conn, golden: list[dict], search_mode: str, k: int = K) -> dic
         kind = "answerable" if item["expected"] else "decline"
         if distances:
             top_dist[kind].append(min(distances))
+        best = hits[0].rerank_score if hits else None
+        if best is not None:
+            top_rerank[kind].append(best)
         rank = first_hit_rank(retrieved, item["expected"]) if item["expected"] else None
         if item["expected"]:
             ranks.append(rank)
-        rows.append({"id": item["id"], "rank": rank, "retrieved": retrieved})
+        rows.append(
+            {
+                "id": item["id"],
+                "answerable": bool(item["expected"]),
+                "rank": rank,
+                "top_rerank": best,
+                "retrieved": retrieved,
+            }
+        )
 
     metrics = retrieval_metrics(ranks, k)
     metrics[f"hit@{CANDIDATES}"] = sum(r is not None for r in ranks) / len(ranks)
@@ -151,7 +194,13 @@ def run_retrieval(conn, golden: list[dict], search_mode: str, k: int = K) -> dic
     for kind, values in top_dist.items():
         if values:
             metrics[f"top1_distance_{kind}_mean"] = round(statistics.mean(values), 3)
-    return {"search_mode": search_mode, "metrics": metrics, "questions": rows}
+    for kind, values in top_rerank.items():
+        if values:
+            metrics[f"top1_rerank_{kind}_mean"] = round(statistics.mean(values), 2)
+    gate = suggest_gate(rows, k)
+    if gate:
+        metrics["gate"] = gate
+    return {"search_mode": variant, "metrics": metrics, "questions": rows}
 
 
 def _git_sha() -> str | None:
@@ -171,9 +220,9 @@ def _git_sha() -> str | None:
 def markdown_table(results: list[dict], k: int = K) -> str:
     header = (
         f"| Retrieval | hit@1 | hit@{k} | MRR@{k} | hit@{CANDIDATES} | p50 ms "
-        "| top-1 dist. answerable / decline |"
+        "| top-1 dist. answerable / decline | top-1 re-rank answerable / decline |"
     )
-    lines = [header, "|---|---|---|---|---|---|---|"]
+    lines = [header, "|---|---|---|---|---|---|---|---|"]
     for r in results:
         m = r["metrics"]
         dist = (
@@ -183,7 +232,8 @@ def markdown_table(results: list[dict], k: int = K) -> str:
         lines.append(
             f"| {r['search_mode']} | {m['hit@1']:.2f} | {m[f'hit@{k}']:.2f} | "
             f"{m[f'mrr@{k}']:.3f} | {m[f'hit@{CANDIDATES}']:.2f} | {m['latency_ms_p50']:.0f} "
-            f"| {dist} |"
+            f"| {dist} | {m.get('top1_rerank_answerable_mean', '-')} / "
+            f"{m.get('top1_rerank_decline_mean', '-')} |"
         )
     return "\n".join(lines)
 
@@ -193,7 +243,7 @@ def main() -> None:
     ap.add_argument(
         "--mode", choices=["retrieval", "redteam-input", "answers"], default="retrieval"
     )
-    ap.add_argument("--search-modes", nargs="+", choices=MODES, default=list(MODES))
+    ap.add_argument("--search-modes", nargs="+", choices=VARIANTS, default=list(VARIANTS))
     ap.add_argument("--no-save", action="store_true", help="don't write results or eval_runs")
     ap.add_argument("--limit", type=int, help="answers: first N questions per set")
     ap.add_argument(
@@ -243,6 +293,13 @@ def main() -> None:
                 f"\n{r['search_mode']} not in top {K} ({len(misses)}, rank in the "
                 f"{CANDIDATES} candidates): {', '.join(misses) or 'none'}"
             )
+            gate = r["metrics"].get("gate")
+            if gate:
+                print(
+                    f"  gate: top re-rank score < {gate['threshold']} -> insufficient context; "
+                    f"stops {gate['decline_gated']}/{gate['decline']} decline and "
+                    f"{gate['answerable_gated']}/{gate['answerable']} answerable questions"
+                )
 
         if not args.no_save:
             _save(conn, args.mode, results, {r["search_mode"]: r["metrics"] for r in results})

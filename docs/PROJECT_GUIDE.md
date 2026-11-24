@@ -124,7 +124,7 @@ question
 input guardrails ── injection? PII? personal advice? too long?
   │
   ▼
-router ──┬── rag ──► hybrid search ─► re-rank ─► relevance gate ─► LLM writes JSON answer + citations
+router ──┬── rag ──► vector search (top 24) ─► re-rank (top 6) ─► relevance gate ─► LLM writes JSON answer + citations
          ├── pay_rate ──► SQL lookup in pay_rates ─► LLM only phrases the result
          ├── clarify ──► "Which award / employment type / level?"
          ├── refer ──► Fair Work Ombudsman message
@@ -142,10 +142,11 @@ answer + clickable citations (React web page)
 1. The user asks: *"Do casual hospitality employees get paid extra on Sundays?"*
 2. **Input guard**: no injection, no personal details, it is a general question: pass.
 3. **Router**: it asks about a rule, not a specific dollar amount: route `rag`.
-4. **Hybrid search**: vector search finds clauses about penalty rates and weekend work;
-   keyword search finds clauses containing "Sunday" and "casual". RRF merges them.
-5. **Re-ranker** keeps the best 6 clauses from the Hospitality award.
-6. **Relevance gate**: the top clause is close enough: continue.
+4. **Vector search** finds the 24 Hospitality clauses closest in meaning (penalty rates,
+   weekend work, casual loading). (Hybrid search, which adds keyword matches merged with
+   RRF, is available but scored lower in the eval.)
+5. **Re-ranker** reads the question with each of the 24 clauses and keeps the best 6.
+6. **Relevance gate**: the top clause's re-rank score is above −9.7: continue.
 7. **LLM** receives the 6 clauses (marked as data, not instructions) and must return
    `{answer, citations, insufficient_context, needs_clarification}`.
 8. **Output guard**: drops any citation that was not in the 6 clauses, removes any dollar
@@ -293,7 +294,7 @@ measured, then changed the platform without throwing away any of the code:
 | 10 | Generation: prompt, JSON, `/chat` | Done (Gemini; five real questions answered with correct citations) |
 | 11 | Guardrails | Done (red-team routes 44/44, no golden question blocked) |
 | 12 | Full evaluation | Done (answer rate 0.90, faithfulness 1.00, decline 1.00, red-team 1.00) |
-| 13 | Re-ranker | |
+| 13 | Re-ranker | Done (hit@1 0.64 → 0.83, hit@6 0.90 → 0.98; relevance gate at −9.7) |
 | 14 | Router, pay tool, clarify route | |
 | 15 | NES and WorkSafe ingestion | |
 | 16 | Prompt Guard classifier | |
@@ -365,7 +366,13 @@ The database commands need `DATABASE_URL` in `backend/.env`; questions also need
   three bugs in my code (sub-paragraph citations dropped, split clauses cut short, times
   masked as money), not the model. After the fixes: 1.00 on 53 answers. Lesson: read the
   failures before tuning the model or the prompt.
-- **"Constraints?"** A 7 GB laptop forced measured trade-offs: ONNX instead of torch
+- **"Did the re-ranker help?"** Yes, measured: the right clause ranked first for 83% of
+  questions instead of 64%, and in the top 6 for 98% instead of 90%. The
+  right-to-disconnect clause went from rank 23 to 1. Cost: ~1.5 s on a laptop CPU, cut from
+  ~3.5 s by using batches of 2 (each batch pads to its longest clause). A tighter relevance
+  gate was not possible: the re-ranker scores topic, not coverage (a visa question scored
+  higher than a correctly found answer), so the gate only stops clearly unrelated questions.
+- **"Constraints?" A 7 GB laptop forced measured trade-offs: ONNX instead of torch
   (same vectors, a third of the memory), hosted Postgres instead of local Docker.
 
 ## 13. Glossary
