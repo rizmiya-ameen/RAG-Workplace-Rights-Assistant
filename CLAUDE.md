@@ -461,7 +461,21 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   through /chat, timeout path (every attempt hangs -> stops at 45 s -> 503), CORS allow /
   deny / off, logs without question/answer/IP. Live: 10 x 200 then 429 (Retry-After 44),
   JSON lines checked. Frontend 429 message test. 710 backend + 26 frontend tests pass.
-- Next: step 20 (CI on GitHub Actions; Postgres service must be pg18; see plan).
+- Step 20 (CI): workflow written, green PR run pending. `.github/workflows/ci.yml`, on push
+  to main, PRs and manual dispatch; no secrets, no LLM. Jobs: `backend` (setup-uv 0.13.8 with
+  cache, `uv sync` frozen, ruff check + format --check, ONNX model cache keyed on
+  config.py, `app.db.init` against service `pgvector/pgvector:pg18` (fails if unreachable,
+  so DB tests can't skip silently), `pytest -q -rs`, ingest --all/--nes/--worksafe from
+  committed data/raw, `run_eval --mode retrieval --search-modes vector+rerank --min-hit
+  0.94 --no-save` -> step summary); `frontend` (Node 22, npm ci, typecheck, vitest,
+  build); `docker` (buildx with GHA cache, `/health` smoke test, image size to summary).
+  `run_eval --min-hit` + `gate_failures()` (test) added. Local gate run on Neon: hit@6
+  0.96, passed, 6 min (CI runners are faster). `ruff format` fixed app/main.py.
+  To finish: push a branch, open a PR, CI green.
+- Next: step 21 (deploy to Azure; see plan). Notes for it: Dockerfile installs dev deps
+  (use `uv sync --no-dev`), models download on first request (bake bge + re-ranker into
+  the image or warm up at start; injection classifier is 740 MB), CORS_ORIGINS = UI origin,
+  run uvicorn with --proxy-headers so rate limits see real client IPs.
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon

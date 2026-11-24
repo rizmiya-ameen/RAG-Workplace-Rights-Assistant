@@ -228,3 +228,15 @@ def test_route_rows_judge_the_router_not_the_final_route():
     )  # fmt: skip
     assert route_failures(row, clarified, "rag") == []
     assert route_failures(row, clarified, "clarify") == ["router chose clarify"]
+
+
+def test_retrieval_gate_fails_a_variant_below_min_hit():
+    """CI gate (step 20): `run_eval --mode retrieval --min-hit 0.94` exits 1 on a drop."""
+    from app.eval.run_eval import gate_failures
+
+    results = [
+        {"search_mode": "vector+rerank", "metrics": {"hit@6": 0.961}},
+        {"search_mode": "vector", "metrics": {"hit@6": 0.883}},
+    ]
+    assert gate_failures(results, 0.94) == ["vector: hit@6 0.883 < 0.94"]
+    assert gate_failures(results[:1], 0.94) == []

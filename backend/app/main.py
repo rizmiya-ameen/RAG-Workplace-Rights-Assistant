@@ -36,6 +36,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 def setup_cors(target: FastAPI, origins_csv: str) -> list[str]:
     """Allow only the listed browser origins (the deployed web UI). No cookies are used, so
     no credentials; only the methods and header the UI needs."""

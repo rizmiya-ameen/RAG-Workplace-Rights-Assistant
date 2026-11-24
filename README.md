@@ -1,5 +1,7 @@
 # Workplace Rights Assistant
 
+[![CI](https://github.com/rizmiya-ameen/RAG-Workplace-Rights-Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/rizmiya-ameen/RAG-Workplace-Rights-Assistant/actions/workflows/ci.yml)
+
 A retrieval-augmented assistant for Australian workplace rights. It answers questions about
 Modern Awards (Hospitality MA000009, General Retail MA000004, Fast Food MA000003, Clerks
 MA000002), the National Employment Standards (Fair Work Act 2009, Part 2-2) and WorkSafe
@@ -339,6 +341,20 @@ in rate tables ("7.00 pm") were masked as dollar amounts. Each fix has a regress
 
 Run it: `cd backend; uv run python -m app.eval.run_eval --mode retrieval` (or
 `--mode redteam-input`, or `--mode answers`, ~15 minutes, resumable with `--resume`).
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) on every push to `main` and every pull request:
+
+- **API:** ruff (lint + format), the full pytest suite against a fresh `pgvector/pgvector:pg18`
+  service container, then a rebuild of the whole index from the committed raw pages
+  (`data/raw/`) and the retrieval eval on the golden set. The build fails if vector +
+  re-ranker hit@6 drops below 0.94 (it is 0.96); the results table goes to the run summary.
+- **Web UI:** type check, Vitest, production build.
+- **Docker:** builds the API image and checks that `/health` answers.
+
+No secrets and no LLM calls in CI: the answer eval (faithfulness, red-team on real answers)
+stays a manual run because of the Gemini free-tier quota.
 
 ## Running locally
 
