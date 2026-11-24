@@ -2,6 +2,7 @@
 
     python -m app.eval.run_eval --mode retrieval          # vector vs hybrid
     python -m app.eval.run_eval --mode retrieval --search-modes hybrid --no-save
+    python -m app.eval.run_eval --mode redteam-input      # input guard routes, no LLM
 
 Retrieval metrics (answerable questions, k = 6):
 - hit@1, hit@6: share of questions with an expected clause at rank 1 / in the top 6;
@@ -14,6 +15,12 @@ search filter (the router or UI picks the award); the others search all awards.
 
 Decline questions (not in the sources) report the closest cosine distance next to the one
 for answerable questions, to tune the relevance gate later (step 13).
+
+Red-team input (eval/redteam.jsonl): the input guard's route for every row against
+expected_route ("rag" = passes the guard). Rows marked known_gap are reported separately
+(attacks the regex rules cannot see yet; Prompt Guard classifier in step 16). The answerable
+golden questions are also run, to count false positives on ordinary questions. The
+must_not_* / must_cite fields are checked on full answers in step 12.
 
 Results go to eval/results/<mode>_<timestamp>.json and the eval_runs table.
 Later steps add answer modes (faithfulness, routes, red-team).
@@ -31,15 +38,60 @@ from psycopg.types.json import Jsonb
 
 from app.config import REPO_DIR
 from app.db.conn import connect
+from app.guardrails.input_guard import check_input
 from app.retrieval.search import CANDIDATES, MODES, search
 
 GOLDEN_PATH = REPO_DIR / "eval" / "golden_set.jsonl"
+REDTEAM_PATH = REPO_DIR / "eval" / "redteam.jsonl"
 RESULTS_DIR = REPO_DIR / "eval" / "results"
 K = 6
 
 
 def load_golden(path: Path = GOLDEN_PATH) -> list[dict]:
     return [json.loads(line) for line in path.read_text("utf-8").splitlines() if line.strip()]
+
+
+def load_redteam(path: Path = REDTEAM_PATH) -> list[dict]:
+    return load_golden(path)
+
+
+def input_route(question: str) -> str:
+    route = check_input(question).route
+    return "rag" if route == "pass" else route
+
+
+def run_redteam_input(rows: list[dict], golden: list[dict]) -> dict:
+    results = [
+        {
+            "id": r["id"],
+            "category": r["category"],
+            "expected": r["expected_route"],
+            "actual": input_route(r["question"]),
+            "known_gap": bool(r.get("known_gap")),
+        }
+        for r in rows
+    ]
+    scored = [r for r in results if not r["known_gap"]]
+    legit = [r for r in scored if r["expected"] == "rag"]
+    attacks = [r for r in scored if r["expected"] != "rag"]
+    golden_blocked = [
+        g["id"] for g in golden if g["expected"] and input_route(g["question"]) != "rag"
+    ]
+    metrics = {
+        "n": len(scored),
+        "route_accuracy": sum(r["expected"] == r["actual"] for r in scored) / len(scored),
+        "attacks_caught": sum(r["actual"] == r["expected"] for r in attacks) / len(attacks),
+        "redteam_false_positive_rate": sum(r["actual"] != "rag" for r in legit) / len(legit),
+        "golden_false_positives": len(golden_blocked),
+        "known_gaps_caught": sum(r["actual"] == r["expected"] for r in results if r["known_gap"]),
+        "known_gaps": sum(r["known_gap"] for r in results),
+    }
+    return {
+        "metrics": metrics,
+        "failures": [r for r in scored if r["expected"] != r["actual"]],
+        "golden_blocked": golden_blocked,
+        "rows": results,
+    }
 
 
 def base_citation(citation: str) -> str:
@@ -137,12 +189,31 @@ def markdown_table(results: list[dict], k: int = K) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--mode", choices=["retrieval"], default="retrieval")
+    ap.add_argument("--mode", choices=["retrieval", "redteam-input"], default="retrieval")
     ap.add_argument("--search-modes", nargs="+", choices=MODES, default=list(MODES))
     ap.add_argument("--no-save", action="store_true", help="don't write results or eval_runs")
     args = ap.parse_args()
 
     golden = load_golden()
+    if args.mode == "redteam-input":
+        result = run_redteam_input(load_redteam(), golden)
+        m = result["metrics"]
+        print(
+            f"red-team input routes: {m['route_accuracy']:.2f} correct over {m['n']} rows "
+            f"(attacks caught {m['attacks_caught']:.2f}, false positives "
+            f"{m['redteam_false_positive_rate']:.2f}); golden questions blocked: "
+            f"{m['golden_false_positives']}; known gaps caught {m['known_gaps_caught']}/"
+            f"{m['known_gaps']}"
+        )
+        for f in result["failures"]:
+            print(f"  FAIL {f['id']}: expected {f['expected']}, got {f['actual']}")
+        for gid in result["golden_blocked"]:
+            print(f"  golden question blocked: {gid}")
+        if not args.no_save:
+            with connect() as conn:
+                _save(conn, args.mode, {"redteam-input": result}, {"redteam-input": m})
+        return
+
     with connect() as conn:
         results = [run_retrieval(conn, golden, m) for m in args.search_modes]
         answerable = sum(bool(g["expected"]) for g in golden)
@@ -160,23 +231,22 @@ def main() -> None:
                 f"{CANDIDATES} candidates): {', '.join(misses) or 'none'}"
             )
 
-        if args.no_save:
-            return
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        payload = {"mode": args.mode, "git_sha": _git_sha(), "created": stamp, "runs": results}
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        out = RESULTS_DIR / f"{args.mode}_{stamp}.json"
-        out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
-        conn.execute(
-            "INSERT INTO eval_runs (git_sha, mode, metrics) VALUES (%s, %s, %s)",
-            (
-                payload["git_sha"],
-                args.mode,
-                Jsonb({r["search_mode"]: r["metrics"] for r in results}),
-            ),
-        )
-        conn.commit()
-        print(f"\nsaved {out.relative_to(REPO_DIR)} and an eval_runs row")
+        if not args.no_save:
+            _save(conn, args.mode, results, {r["search_mode"]: r["metrics"] for r in results})
+
+
+def _save(conn, mode: str, runs, metrics: dict) -> None:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    payload = {"mode": mode, "git_sha": _git_sha(), "created": stamp, "runs": runs}
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = RESULTS_DIR / f"{mode}_{stamp}.json"
+    out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    conn.execute(
+        "INSERT INTO eval_runs (git_sha, mode, metrics) VALUES (%s, %s, %s)",
+        (payload["git_sha"], mode, Jsonb(metrics)),
+    )
+    conn.commit()
+    print(f"\nsaved {out.relative_to(REPO_DIR)} and an eval_runs row")
 
 
 if __name__ == "__main__":

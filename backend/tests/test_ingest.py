@@ -78,7 +78,9 @@ def meta(sha="sha-1"):
 
 
 def count(conn, doc_id):
-    return conn.execute("SELECT count(*) FROM chunks WHERE document_id = %s", (doc_id,)).fetchone()[0]
+    return conn.execute("SELECT count(*) FROM chunks WHERE document_id = %s", (doc_id,)).fetchone()[
+        0
+    ]
 
 
 def test_ingest_stores_chunks_with_embeddings(conn, chunks):
@@ -91,7 +93,12 @@ def test_ingest_stores_chunks_with_embeddings(conn, chunks):
            FROM chunks WHERE document_id = %s AND clause_ref = '13A.1'""",
         (doc_id,),
     ).fetchone()
-    assert (ref, heading, dims, tsv_hit) == ("13A.1", "13A. Employee right to disconnect", DIMS, True)
+    assert (ref, heading, dims, tsv_hit) == (
+        "13A.1",
+        "13A. Employee right to disconnect",
+        DIMS,
+        True,
+    )
 
 
 def test_unchanged_version_is_skipped(conn, chunks):

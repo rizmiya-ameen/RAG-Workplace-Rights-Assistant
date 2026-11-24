@@ -1,9 +1,11 @@
-"""Question -> retrieval -> LLM -> checked answer with citations.
+"""Question -> input guard -> retrieval -> context guard -> LLM -> output guard -> answer.
 
     python -m app.pipeline "Do casuals get paid more on Sundays?" --award MA000009
 
-Build step 10 covers the rag path only. Later steps add the input guard and router (pay_rate,
-clarify, refer, out_of_scope), the re-ranker with a relevance gate and the full output guard.
+Routes: rag, clarify (the model asks for a missing detail), insufficient_context, fallback
+(reply failed a check), and from the input guard: blocked (injection, evasion), refer
+(personal advice or dispute) and out_of_scope. Step 14 adds the router with the pay_rate
+route; step 13 the re-ranker and relevance gate.
 """
 
 import argparse
@@ -18,6 +20,9 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.db.conn import connect
+from app.guardrails.context_guard import check_context
+from app.guardrails.input_guard import check_input
+from app.guardrails.output_guard import check_output
 from app.llm import chat
 from app.rag.generate import parse_reply
 from app.rag.prompts import build_messages, new_canary
@@ -36,7 +41,32 @@ FALLBACK_TEXT = (
     "contact the Fair Work Ombudsman on 13 13 94."
 )
 
-Route = Literal["rag", "clarify", "insufficient_context", "fallback"]
+BLOCKED_TEXT = (
+    "I can only answer questions about Australian workplace awards, and I can't change how I "
+    "work. Please ask about pay, hours, rosters, leave, breaks or other conditions."
+)
+ROUTE_TEXT = {
+    "injection": BLOCKED_TEXT,
+    "evasion": (
+        "I can't help with getting around award obligations. Employers can get free help to "
+        "comply from the Fair Work Ombudsman (13 13 94, fairwork.gov.au)."
+    ),
+    "refer": (
+        "That sounds like a question about your own situation, which needs personal advice. "
+        "The Fair Work Ombudsman (13 13 94, fairwork.gov.au) can help for free. Strict time "
+        "limits can apply to dismissal and some other claims, so contact them soon. I can "
+        "explain what an award says in general if you ask about the rule itself."
+    ),
+    "out_of_scope": (
+        "I can only help with Australian workplace awards: pay, hours, rosters, leave, breaks "
+        "and similar conditions under the Hospitality, General Retail, Fast Food and Clerks "
+        "awards."
+    ),
+}
+
+Route = Literal[
+    "rag", "clarify", "insufficient_context", "fallback", "blocked", "refer", "out_of_scope"
+]
 
 
 class Citation(BaseModel):
@@ -89,7 +119,6 @@ def answer_question(
     s = get_settings()
     started = time.perf_counter()
     request_id = uuid.uuid4().hex
-    hits = search_fn(conn, question, mode=s.retrieval_mode, award=award, k=s.retrieval_k)
     events: list[tuple[str, str, dict]] = []
 
     def respond(answer: str, route: Route, cited: list[Hit]) -> ChatResponse:
@@ -112,16 +141,38 @@ def answer_question(
             latency_ms=round(1000 * (time.perf_counter() - started), 1),
         )
 
+    # 1. Input guard: decides the route before any retrieval or LLM call.
+    checked = check_input(question)
+    if checked.redactions:
+        events.append(("input", "pii_redacted", checked.redactions))
+    if checked.route != "pass":
+        events.append(("input", checked.rule or checked.route, {}))
+        kind = (checked.rule or "").split(":", 1)[0]
+        text = ROUTE_TEXT.get(kind, ROUTE_TEXT.get(checked.route, BLOCKED_TEXT))
+        route: Route = checked.route  # type: ignore[assignment]
+        return respond(text, route, [])
+
+    # 2. Retrieval on the redacted question, then the context guard.
+    hits = search_fn(conn, checked.text, mode=s.retrieval_mode, award=award, k=s.retrieval_k)
+    docs = _documents(conn, {h.source_id for h in hits}) if hits else {}
+    context = check_context(hits, {sid: url for sid, (_, url) in docs.items()})
+    for citation, reason in context.dropped.items():
+        events.append(("context", "source_dropped", {"citation": citation, "reason": reason}))
+    if context.cleaned:
+        events.append(("context", "source_cleaned", {"count": context.cleaned}))
+    hits = context.hits
     if not hits:
         return respond(INSUFFICIENT_TEXT, "insufficient_context", [])
 
+    # 3. Generation.
     canary = new_canary()
-    titles = {sid: t for sid, (t, _) in _documents(conn, {h.source_id for h in hits}).items()}
-    messages, masked = build_messages(question, hits, canary, titles)
+    titles = {sid: title for sid, (title, _) in docs.items()}
+    messages, masked = build_messages(checked.text, hits, canary, titles)
     if masked:
         events.append(("context", "amounts_masked", {"count": masked}))
-
     reply = chat_fn(messages)
+
+    # 4. Output guard: reply checks (canary, JSON, citations), then the answer text.
     by_id = {h.citation: h for h in hits}
     parsed = parse_reply(reply.content, canary=canary, retrieved=list(by_id))
     for rule in parsed.events:
@@ -129,15 +180,15 @@ def answer_question(
         if rule == "invalid_json":
             detail = {"finish_reason": reply.finish_reason}
         events.append(("output", rule, detail))
-
     if not parsed.ok:
         return respond(FALLBACK_TEXT, "fallback", [])
     if parsed.insufficient_context:
         return respond(INSUFFICIENT_TEXT, "insufficient_context", [])
+
+    answer, output_events = check_output(parsed.answer)
+    events.extend(("output", rule, detail) for rule, detail in output_events)
     cited = [by_id[c] for c in parsed.citations]
-    if parsed.needs_clarification:
-        return respond(parsed.answer, "clarify", cited)
-    return respond(parsed.answer, "rag", cited)
+    return respond(answer, "clarify" if parsed.needs_clarification else "rag", cited)
 
 
 def main() -> None:

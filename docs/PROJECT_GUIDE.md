@@ -227,13 +227,16 @@ Everything is under `backend/app/`. Built so far:
 | `rag/prompts.py` | The prompt: rules, sources wrapped as data, amounts hidden, canary | 10 |
 | `rag/generate.py` | Checks the reply: JSON shape, canary, citations really retrieved | 10 |
 | `pipeline.py` | Question → search → LLM → checked answer with citations | 10 |
-| `backend/tests/` | 242 automated tests; `fixtures/` holds exact excerpts of the real pages | 2-10 |
+| `guardrails/input_guard.py` | Checks every question first: PII redaction, injection and evasion patterns, advice → refer, off-topic | 11 |
+| `guardrails/context_guard.py` | Checks retrieved clauses: allowed website only, hidden characters removed, injected text dropped | 11 |
+| `guardrails/output_guard.py` | Checks the answer: made-up dollar amounts removed, PII redacted | 11 |
+| `eval/redteam.jsonl` | Attack questions plus legitimate look-alikes, with the expected route | 11 |
+| `backend/tests/` | 443 automated tests; `fixtures/` holds exact excerpts of the real pages | 2-11 |
 
 Still to come (in build order):
 
 | File | What it will do | Step |
 |---|---|---|
-| `guardrails/` | Input, context and output guardrails | 11 |
 | `retrieval/rerank.py` | Cross-encoder re-ranker | 13 |
 | `router.py`, `tools/pay_rates.py` | Route questions; pay lookups | 14 |
 | `frontend/` | React chat page with citation chips | 18 |
@@ -287,7 +290,7 @@ measured, then changed the platform without throwing away any of the code:
 | 8 | Retrieval: vector, then hybrid | Done (`app/retrieval/search.py`) |
 | 9 | Golden set + first evaluation | Done (vector hit@6 0.90, hybrid 0.80) |
 | 10 | Generation: prompt, JSON, `/chat` | Done (Gemini; five real questions answered with correct citations) |
-| 11 | Guardrails | |
+| 11 | Guardrails | Done (red-team routes 44/44, no golden question blocked) |
 | 12 | Full evaluation | |
 | 13 | Re-ranker | |
 | 14 | Router, pay tool, clarify route | |

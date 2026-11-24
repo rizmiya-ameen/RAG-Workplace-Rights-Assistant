@@ -8,8 +8,9 @@ and cites the exact clause every time (for example `MA000009:28.2`).
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–10 of 22 are done. Retrieval, evaluation and cited answers
-> (`POST /chat`) work; guardrails, the re-ranker, the pay-rate tool and the web UI come next.
+> Work in progress: build steps 1–11 of 22 are done. Retrieval, evaluation, cited answers
+> (`POST /chat`) and guardrails work; the full answer eval, the re-ranker, the pay-rate tool
+> and the web UI come next.
 
 ## How it works
 
@@ -50,6 +51,32 @@ The first real answer said casual hospitality workers get 150% on Sundays. The c
 model matched the "Saturday Sunday" headers to the wrong percentages. Rate tables are now
 labelled in the prompt and the model may not read figures off them; exact rates come from the
 structured pay-rate tool, which reads the real table grid.
+
+## Guardrails
+
+Mapped to the OWASP Top 10 for LLM applications. Each rule has a test, and
+`eval/redteam.jsonl` holds attacks next to legitimate questions that look like them.
+
+| Stage | Checks |
+|---|---|
+| Input (before search or the LLM) | Length limit; Unicode normalisation (zero-width and look-alike characters); PII redaction (email, phone, TFN with checksum, BSB, account number); prompt-injection and evasion patterns -> blocked; personal advice or disputes -> referred to the Fair Work Ombudsman; off-topic -> out of scope |
+| Context (retrieved clauses) | Source URL must be on the domain allow-list; tags and hidden characters stripped; clauses containing injection patterns dropped; sources wrapped as escaped data; dollar amounts masked |
+| Output (the model's reply) | Canary leak -> blocked; invalid JSON -> fallback; citations not retrieved -> dropped, none left -> fallback; dollar amounts not from the pay tool removed; PII redacted; disclaimer added by code |
+
+Patterns are narrow on purpose: "Can my employer ignore the rules about meal breaks?" and "My
+boss pays me cash in hand, is that allowed?" are worker questions and get answers;
+"How can I avoid paying penalty rates to my staff?" does not. Guardrail decisions are logged
+to `guardrail_events` with rule names and counts, never the question text.
+
+Red-team input routes (`run_eval --mode redteam-input`, no LLM):
+
+| Rows | Route accuracy | Attacks caught | False positives (red-team) | Golden questions blocked | Known gaps caught |
+|---|---|---|---|---|---|
+| 44 + 2 known gaps | 1.00 | 1.00 | 0.00 | 0 of 59 | 0 of 2 |
+
+The two known gaps (a base64-encoded instruction and letter-spaced text) are invisible to
+regex rules; the Prompt Guard classifier is the next layer for those. Even when they get
+through, retrieved text is wrapped as data and the output checks still apply.
 
 ## Evaluation
 

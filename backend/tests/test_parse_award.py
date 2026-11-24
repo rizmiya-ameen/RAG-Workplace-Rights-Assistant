@@ -114,7 +114,10 @@ def test_schedule_clauses_use_letter_refs(hosp):
 
 
 def test_unnumbered_sublevel_is_kept_as_body_with_warning(hosp):
-    assert "The additional hourly rate component of the penalty rates in" in by_ref(hosp)["C.3"].content
+    assert (
+        "The additional hourly rate component of the penalty rates in"
+        in by_ref(hosp)["C.3"].content
+    )
     assert any("without a clause number" in w for w in hosp.warnings)
 
 
