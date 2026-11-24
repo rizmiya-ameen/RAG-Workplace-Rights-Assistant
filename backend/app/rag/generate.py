@@ -38,20 +38,23 @@ def _base(citation: str) -> str:
     return citation.split("#", 1)[0]
 
 
+_SUBPARAGRAPH = re.compile(r"(?:\s*\([a-zA-Z0-9]{1,4}\))+$")
+
+
 def match_citations(cited: list[str], retrieved: list[str]) -> tuple[list[str], list[str]]:
-    """Map cited ids onto retrieved ids. Exact match, or the clause without its split suffix
-    ("MA000009:18.1" -> the first retrieved "MA000009:18.1#n"). Returns (valid, dropped)."""
+    """Map cited ids onto retrieved ids. An exact id ("MA000009:18.1#2") is that part; a whole
+    clause ("MA000009:18.1") is every retrieved part of it ("#1", "#2"), so the user and the
+    judge see all the text the answer drew on. A sub-paragraph the model adds
+    ("MA000009:28.2(a)", "MA000003:18.3(b)(i)") cites the clause. The step 12 eval found
+    both being cut short. Returns (valid, dropped)."""
     valid, dropped = [], []
     retrieved_set = set(retrieved)
     for raw in cited:
-        cid = str(raw).strip()
-        match = cid if cid in retrieved_set else None
-        if match is None:
-            match = next((r for r in retrieved if _base(r) == _base(cid)), None)
-        if match is None:
+        cid = _SUBPARAGRAPH.sub("", str(raw).strip())
+        matches = [cid] if cid in retrieved_set else [r for r in retrieved if _base(r) == cid]
+        if not matches:
             dropped.append(cid)
-        elif match not in valid:
-            valid.append(match)
+        valid += [m for m in matches if m not in valid]
     return valid, dropped
 
 

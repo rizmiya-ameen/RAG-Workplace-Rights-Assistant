@@ -71,9 +71,29 @@ def test_insufficient_context_and_clarify_need_no_citation():
     assert r.ok and r.needs_clarification
 
 
-def test_split_clause_citation_maps_to_retrieved_part():
+def test_split_clause_citation_maps_to_retrieved_parts():
     valid, dropped = match_citations(
         ["MA000009:18.1", "MA000009:18.1#2", " MA000009:11.1 "], RETRIEVED
     )
     assert valid == ["MA000009:18.1#1", "MA000009:18.1#2", "MA000009:11.1"]
     assert dropped == []
+
+
+def test_whole_clause_citation_keeps_every_retrieved_part():
+    # regression (step 12 eval): citing "28.5" kept only "28.5#1", so the judge never saw #2
+    assert match_citations(["MA000009:18.1"], RETRIEVED)[0] == [
+        "MA000009:18.1#1",
+        "MA000009:18.1#2",
+    ]
+    assert match_citations(["MA000009:18.1#2"], RETRIEVED)[0] == ["MA000009:18.1#2"]
+
+
+def test_subparagraph_citations_map_to_the_retrieved_clause():
+    # regression (step 12 eval): "MA000009:28.2(a)" was dropped, so answers fell back or
+    # showed the wrong clause
+    valid, dropped = match_citations(
+        ["MA000009:11.1(a)", "MA000009:18.1(b)(i)", "MA000009:11.1 (c)"], RETRIEVED
+    )
+    assert valid == ["MA000009:11.1", "MA000009:18.1#1", "MA000009:18.1#2"]
+    assert dropped == []
+    assert match_citations(["MA000009:28.2(a)"], RETRIEVED) == ([], ["MA000009:28.2"])

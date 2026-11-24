@@ -231,7 +231,8 @@ Everything is under `backend/app/`. Built so far:
 | `guardrails/context_guard.py` | Checks retrieved clauses: allowed website only, hidden characters removed, injected text dropped | 11 |
 | `guardrails/output_guard.py` | Checks the answer: made-up dollar amounts removed, PII redacted | 11 |
 | `eval/redteam.jsonl` | Attack questions plus legitimate look-alikes, with the expected route | 11 |
-| `backend/tests/` | 443 automated tests; `fixtures/` holds exact excerpts of the real pages | 2-11 |
+| `eval/answers.py` | Full evaluation: real answers, an LLM judge for faithfulness, red-team checks | 12 |
+| `backend/tests/` | 460 automated tests; `fixtures/` holds exact excerpts of the real pages | 2-12 |
 
 Still to come (in build order):
 
@@ -291,7 +292,7 @@ measured, then changed the platform without throwing away any of the code:
 | 9 | Golden set + first evaluation | Done (vector hit@6 0.90, hybrid 0.80) |
 | 10 | Generation: prompt, JSON, `/chat` | Done (Gemini; five real questions answered with correct citations) |
 | 11 | Guardrails | Done (red-team routes 44/44, no golden question blocked) |
-| 12 | Full evaluation | |
+| 12 | Full evaluation | Done (answer rate 0.90, faithfulness 1.00, decline 1.00, red-team 1.00) |
 | 13 | Re-ranker | |
 | 14 | Router, pay tool, clarify route | |
 | 15 | NES and WorkSafe ingestion | |
@@ -359,6 +360,11 @@ The database commands need `DATABASE_URL` in `backend/.env`; questions also need
   the wrong percentages. Fix: rate tables are labelled in the prompt and the model may not
   read figures off them; exact rates come from the pay-rate tool, which reads the real grid.
   Found by checking the answer against the clause, which is why every answer cites one.
+- **"How do you know the answers are right?"** An LLM judge checks every answer against
+  only the clauses it cites. The first run scored 0.90; reading the flagged answers showed
+  three bugs in my code (sub-paragraph citations dropped, split clauses cut short, times
+  masked as money), not the model. After the fixes: 1.00 on 53 answers. Lesson: read the
+  failures before tuning the model or the prompt.
 - **"Constraints?"** A 7 GB laptop forced measured trade-offs: ONNX instead of torch
   (same vectors, a third of the memory), hosted Postgres instead of local Docker.
 

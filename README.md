@@ -8,9 +8,9 @@ and cites the exact clause every time (for example `MA000009:28.2`).
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–11 of 22 are done. Retrieval, evaluation, cited answers
-> (`POST /chat`) and guardrails work; the full answer eval, the re-ranker, the pay-rate tool
-> and the web UI come next.
+> Work in progress: build steps 1–12 of 22 are done. Retrieval, cited answers
+> (`POST /chat`), guardrails and the full answer evaluation work; the re-ranker, the pay-rate
+> tool and the web UI come next.
 
 ## How it works
 
@@ -98,7 +98,35 @@ hits down the list. Both modes have the right clause among the top 24 candidates
 questions, so the cross-encoder re-ranker (next on the plan) works from the same pool either
 way.
 
-Run it: `cd backend; uv run python -m app.eval.run_eval --mode retrieval`
+### Full answer evaluation
+
+Every golden and red-team question goes through the real pipeline (`POST /chat` path) on
+Gemini `gemini-3.5-flash-lite`. An LLM judge sees only the answer and the clauses it cites
+and decides whether every statement is supported.
+
+| Version | hit@6 | Answer rate | Expected clause cited | Faithfulness | Decline accuracy | Red-team pass | p50 / p95 latency | Cost |
+|---|---|---|---|---|---|---|---|---|
+| Vector + guardrails | 0.90 | 0.90 (53/59) | 0.98 | 1.00 (53/53) | 1.00 (10/10) | 1.00 (44/44) | 1.5 s / 2.5 s | $0 (free tier; 137 LLM calls, 198k tokens) |
+
+- **Answer rate:** answerable questions that got a cited answer. Five of the six misses are
+  retrieval misses (the right clause was not in the top 6, e.g. the right-to-disconnect
+  clause); the re-ranker is the next step. One was a sensible clarifying question.
+- **Decline accuracy:** questions the sources cannot answer (a nurse's wage, visa work
+  limits, payroll tax) that got no cited answer.
+- **Red-team pass:** attacks stopped by the right guard, and legitimate look-alike questions
+  not stopped by any guard. Two known gaps (base64 and letter-spaced instructions) are
+  reported separately and still get through; the retrieved text is wrapped as data, and
+  neither leaked anything.
+- **Caveats:** 59 questions is a small set, and the judge is the same model family as the
+  answerer, which can be lenient. The judge prompt is in `backend/app/eval/answers.py`.
+
+The first full run scored 0.92 on citations and 0.90 on faithfulness. Reading the flagged
+answers found three bugs in the pipeline, not the model: citations to sub-paragraphs
+("28.2(a)") were dropped, a citation of a split clause kept only its first part, and times
+in rate tables ("7.00 pm") were masked as dollar amounts. Each fix has a regression test.
+
+Run it: `cd backend; uv run python -m app.eval.run_eval --mode retrieval` (or
+`--mode redteam-input`, or `--mode answers`, ~15 minutes, resumable with `--resume`).
 
 ## Running locally
 

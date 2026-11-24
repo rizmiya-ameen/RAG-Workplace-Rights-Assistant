@@ -13,7 +13,7 @@ __pycache__/
 models/
 
 # Eval outputs (keep the folder, not every run)
-eval/results/*.json
+eval/results/
 
 # Node
 node_modules/

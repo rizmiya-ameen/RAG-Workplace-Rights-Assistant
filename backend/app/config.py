@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2048
     # Free tiers return 503 (busy) and 429 (rate limit) at times: retry with backoff.
     llm_max_retries: int = 2
+    # Faithfulness judge in the eval; empty = same model as answers.
+    judge_model: str = ""
 
     # Retrieval for /chat: "vector" won the step 9 eval (hit@6 0.90 vs 0.80 hybrid).
     retrieval_mode: str = "vector"

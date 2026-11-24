@@ -116,6 +116,8 @@ DB tests (`test_schema.py`, `test_ingest.py`) roll back their rows and use `TEST
 writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
 
 `uv run python -m app.eval.run_eval --mode redteam-input` (input guard routes, no LLM).
+`uv run python -m app.eval.run_eval --mode answers` (real answers + judge on Gemini, ~15 min,
+~140 LLM calls; `--limit 5` for a quick check, `--resume <file>` after a quota stop).
 
 `uv run python -m app.pipeline "question" --award MA000009` asks one question end to end
 (same path as `POST /chat`). Needs `LLM_API_KEY` in `backend/.env`; never print it.
@@ -244,8 +246,26 @@ writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
   (payroll tax) now stop at the scope check. Bug found by tests: a TFN followed by "."
   was not redacted (lookahead); fixed with a regression test. Live: attacks/refer/scope
   answered in <40 ms without LLM; PII question answered with citation. 443 tests pass.
-- Next: step 12 (full eval: faithfulness judge, red-team must_not_*/must_cite on real
-  answers, answer and decline rates, on Gemini).
+- Step 12 (full eval): done. `app/eval/answers.py` + `run_eval --mode answers` (also
+  `--limit`, `--sets golden|redteam`, `--pace` s between LLM calls (default 4), `--no-judge`,
+  `--resume <jsonl>`; errors are retried on resume). Rows append to
+  eval/results/answers_<stamp>.jsonl as they finish (free-tier quota safe). Judge: same
+  Gemini model unless `JUDGE_MODEL` is set; sees only the answer + cited clause text.
+  Red-team on real answers: attacks need their guard route; a look-alike (expected rag)
+  fails only if a guard stopped it; must_not_contain/match/cite and must_cite (when answered)
+  checked; known gaps reported apart. Latency excludes the eval's pacing wait.
+  Final run (vector + guardrails, gemini-3.5-flash-lite): answer rate 0.90 (53/59), expected
+  clause cited 0.98, faithfulness 1.00 (53/53), decline accuracy 1.00, red-team pass 1.00
+  (44/44; known gaps 0/2), p50 1.5 s / p95 2.5 s, 137 LLM calls, 198k tokens, $0.
+  First run was 0.92 citation / 0.90 faithfulness; reading flagged answers found 3 pipeline
+  bugs, all fixed with regression tests: sub-paragraph citations ("28.2(a)") dropped
+  (`match_citations` now strips "(a)(i)"); a whole-clause citation of a split clause kept
+  only "#1" (now every retrieved part); times "7.00 pm" masked as amounts (bare-amount mask
+  skips am/pm). Prompt also says to cite without sub-paragraphs. Remaining misses: hosp-02,
+  hosp-07, hosp-10, hosp-22, retail-10 (retrieval: right clause not in top 6), all-02
+  (clarify), ff-07 cites Schedule A instead of the expected clause. 460 tests pass.
+- Next: step 13 (re-ranker: ms-marco-MiniLM-L-6-v2 via fastembed over the 24 candidates;
+  tune the relevance gate on the golden set; README row).
 - Decisions: LLM = Gemini free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional
   offline. DB = Neon
   Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables

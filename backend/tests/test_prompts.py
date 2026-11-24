@@ -85,3 +85,12 @@ def test_clause_numbers_survive_outside_rate_tables():
 def test_ordinary_clause_is_not_tagged_rate_table(chunks):
     messages, _ = build_messages("q", [_hit(chunks["11.1"])], "c")
     assert 'type="rate-table"' not in messages[1]["content"]
+
+
+def test_times_in_rate_tables_are_not_masked(chunks):
+    # regression (step 12 eval): "7.00 pm" was shown to the model as "[amount] pm"
+    clause = chunks["C.3"]
+    assert clause.is_rate_table and "7.00 pm" in clause.content
+    text, _ = mask_amounts(clause.content, rate_table=True)
+    assert "7.00 pm" in text and "7.00 am" in text
+    assert "[amount] pm" not in text and "[amount] am" not in text

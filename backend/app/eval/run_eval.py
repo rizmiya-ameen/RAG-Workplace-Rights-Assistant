@@ -38,6 +38,7 @@ from psycopg.types.json import Jsonb
 
 from app.config import REPO_DIR
 from app.db.conn import connect
+from app.eval.answers import Recorder, answer_metrics, run_one
 from app.guardrails.input_guard import check_input
 from app.retrieval.search import CANDIDATES, MODES, search
 
@@ -189,12 +190,24 @@ def markdown_table(results: list[dict], k: int = K) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--mode", choices=["retrieval", "redteam-input"], default="retrieval")
+    ap.add_argument(
+        "--mode", choices=["retrieval", "redteam-input", "answers"], default="retrieval"
+    )
     ap.add_argument("--search-modes", nargs="+", choices=MODES, default=list(MODES))
     ap.add_argument("--no-save", action="store_true", help="don't write results or eval_runs")
+    ap.add_argument("--limit", type=int, help="answers: first N questions per set")
+    ap.add_argument(
+        "--sets", nargs="+", choices=["golden", "redteam"], default=["golden", "redteam"]
+    )
+    ap.add_argument("--pace", type=float, default=4.0, help="answers: seconds between LLM calls")
+    ap.add_argument("--no-judge", action="store_true", help="answers: skip the faithfulness judge")
+    ap.add_argument("--resume", type=Path, help="answers: results .jsonl to continue")
     args = ap.parse_args()
 
     golden = load_golden()
+    if args.mode == "answers":
+        run_answers(args, golden)
+        return
     if args.mode == "redteam-input":
         result = run_redteam_input(load_redteam(), golden)
         m = result["metrics"]
@@ -233,6 +246,44 @@ def main() -> None:
 
         if not args.no_save:
             _save(conn, args.mode, results, {r["search_mode"]: r["metrics"] for r in results})
+
+
+def run_answers(args, golden: list[dict]) -> None:
+    items = []
+    if "golden" in args.sets:
+        items += [("golden", g) for g in golden[: args.limit]]
+    if "redteam" in args.sets:
+        items += [("redteam", r) for r in load_redteam()[: args.limit]]
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = args.resume or RESULTS_DIR / f"answers_{stamp}.jsonl"
+    done: dict[str, dict] = {}
+    if args.resume:
+        for line in out.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            if row["route"] != "error":  # retry errors (quota, busy) on resume
+                done[row["id"]] = row
+    out.parent.mkdir(parents=True, exist_ok=True)
+    rows = list(done.values())
+    out.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    recorder = Recorder(pace_s=args.pace)
+    todo = [(k, it) for k, it in items if it["id"] not in done]
+    print(f"{len(items)} questions, {len(done)} already done; results -> {out}")
+    with connect() as conn:
+        for n, (kind, item) in enumerate(todo, 1):
+            row = run_one(conn, item, kind, recorder, do_judge=not args.no_judge)
+            conn.commit()  # keep guardrail_events from the run
+            rows.append(row)
+            with out.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
+            flag = row.get("failures") or (row.get("judge") or {}).get("unsupported_claims")
+            print(f"[{n}/{len(todo)}] {row['id']:10} {row['route']:20} {flag or ''}", flush=True)
+
+        metrics = answer_metrics(rows, golden)
+        print("\n" + json.dumps(metrics, indent=1))
+        if not args.no_save:
+            _save(conn, "answers", {"results_file": out.name}, {"answers": metrics})
 
 
 def _save(conn, mode: str, runs, metrics: dict) -> None:
