@@ -296,7 +296,7 @@ measured, then changed the platform without throwing away any of the code:
 | 12 | Full evaluation | Done (answer rate 0.90, faithfulness 1.00, decline 1.00, red-team 1.00) |
 | 13 | Re-ranker | Done (hit@1 0.64 → 0.83, hit@6 0.90 → 0.98; relevance gate at −9.7) |
 | 14 | Router, pay tool, clarify route | Done (route accuracy 1.00 on 29 rows; pay amounts from SQL, LLM only phrases) |
-| 15 | NES and WorkSafe ingestion | |
+| 15 | NES and WorkSafe ingestion | Done (NES 109 sections, 12 WorkSafe pages; 77 golden questions, hit@6 0.96) |
 | 16 | Prompt Guard classifier | |
 | 17 | Observability (Langfuse) | |
 | 18 | Frontend | |
@@ -382,6 +382,14 @@ The database commands need `DATABASE_URL` in `backend/.env`; questions also need
   phrasings found 5 of 7 pay questions misrouted; three general rules fixed them. Misroutes fail
   safe (no number instead of a wrong number). An LLM classifier is the fallback if the eval
   shows it's needed.
+- **"How did adding sources change retrieval?"** Measurably, and not only for the better:
+  the 233 NES and WorkSafe chunks crowded two award clauses out of the re-ranker's top 24.
+  The eval caught it (hit@6 0.94); giving the award and the general documents separate
+  candidate pools fixed it (0.96) at a latency cost. Lesson: re-run the eval after every
+  data change, not just code changes.
+- **"Why not use the plan's `WSV:<slug>#<heading>` citations?"** "#n" already marks split
+  chunks, and the citation checker splits on "#", so every WorkSafe section would have
+  collapsed into its page. Caught while designing, before any data used it.
 - **"Constraints?"** A 7 GB laptop forced measured trade-offs: ONNX instead of torch
   (same vectors, a third of the memory), hosted Postgres instead of local Docker.
 

@@ -1,7 +1,9 @@
-"""Parse, embed and store saved award pages, one document version at a time.
+"""Parse, embed and store saved source pages, one document version at a time.
 
-    python -m app.ingestion.ingest --all
+    python -m app.ingestion.ingest --all                  # the four awards
     python -m app.ingestion.ingest --award MA000009 [--force]
+    python -m app.ingestion.ingest --nes                  # Fair Work Act Part 2-2
+    python -m app.ingestion.ingest --worksafe             # WorkSafe Victoria pages
 
 A version is (source_id, effective_date). If that version is already stored with the same
 sha256 its chunks are skipped; otherwise they are replaced in a single transaction. Pay rates
@@ -17,7 +19,8 @@ import psycopg
 
 from app.db.conn import apply_schema, connect
 from app.embeddings import DIMS, embed_passages, passage_text
-from app.ingestion.parse_award import Chunk, latest_raw, parse_award_html, validate
+from app.ingestion.parse_award import Chunk, ParseResult, latest_raw, parse_award_html, validate
+from app.ingestion.parse_nes import parse_nes_html, validate_nes
 from app.ingestion.parse_rates import load_rates, parse_rates_html, validate_rates
 
 Embedder = Callable[[list[str]], list[list[float]]]
@@ -92,6 +95,28 @@ def ingest_award(conn: psycopg.Connection, award_id: str, force: bool = False) -
     )
 
 
+def ingest_parsed(
+    conn: psycopg.Connection,
+    source_id: str,
+    parse: Callable[[bytes], ParseResult],
+    check: Callable[[ParseResult], list[str]],
+    force: bool = False,
+) -> str:
+    """NES and WorkSafe pages: chunks only (no pay rates)."""
+    path, meta = latest_raw(source_id)
+    result = parse(path.read_bytes())
+    problems = check(result)
+    if problems:
+        raise ValueError(f"{source_id} failed validation, not ingesting: {problems[:5]}")
+    started = time.perf_counter()
+    doc_id, status = ingest_document(conn, meta, result.chunks, force=force)
+    conn.commit()
+    return (
+        f"{source_id} {meta['effective_date']}: {status}, {len(result.chunks)} chunks, "
+        f"document_id {doc_id}, {time.perf_counter() - started:.0f}s"
+    )
+
+
 def main() -> None:
     from app.ingestion.fetch import STARTING_AWARDS
 
@@ -99,13 +124,27 @@ def main() -> None:
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--award", action="append")
     group.add_argument("--all", action="store_true")
+    group.add_argument("--nes", action="store_true")
+    group.add_argument("--worksafe", action="store_true")
     ap.add_argument("--force", action="store_true", help="re-embed even if unchanged")
     args = ap.parse_args()
 
     with connect() as conn:
         apply_schema(conn)
-        for award_id in STARTING_AWARDS if args.all else args.award:
-            print(ingest_award(conn, award_id, force=args.force), flush=True)
+        if args.nes:
+            print(ingest_parsed(conn, "NES", parse_nes_html, validate_nes, args.force))
+        elif args.worksafe:
+            from app.ingestion.fetch import WORKSAFE_PAGES
+            from app.ingestion.parse_worksafe import parse_worksafe_html, validate_worksafe
+
+            for slug in WORKSAFE_PAGES:
+                msg = ingest_parsed(
+                    conn, f"WSV:{slug}", parse_worksafe_html, validate_worksafe, args.force
+                )
+                print(msg, flush=True)
+        else:
+            for award_id in STARTING_AWARDS if args.all else args.award:
+                print(ingest_award(conn, award_id, force=args.force), flush=True)
         total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
         n_rates = conn.execute("SELECT count(*) FROM pay_rates").fetchone()[0]
     print(f"chunks in database: {total}, pay rates: {n_rates}")

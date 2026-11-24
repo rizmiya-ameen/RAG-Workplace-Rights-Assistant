@@ -103,6 +103,9 @@ def test_amounts_the_tool_does_not_hold_go_to_the_clauses():
         "How much is a junior casual paid in retail?",
         "How much do I get paid for working past midnight in fast food?",
         "What is the hourly rate for a level 1 apprentice cook?",
+        "How much redundancy pay do I get after 5 years?",  # NES s119, not the pay tool
+        "How much notice pay does a casual level 2 get in retail?",
+        "How much WorkCover compensation do I get?",
     ):
         assert route_question(text).route == "rag", text
 

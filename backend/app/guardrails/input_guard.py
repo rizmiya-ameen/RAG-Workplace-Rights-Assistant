@@ -216,7 +216,10 @@ _SCOPE = re.compile(
     r"weekend|saturday|sunday|night|annual|parental|maternity|union|ombudsman|fair work|nes|"
     r"hospitality|retail|fast food|clerks?|clerical|office|restaurant|hotel|cafe|bar|pub|shop|"
     r"store|kitchen|cook|chef|waiter|barista|cashier|receptionist|minimum wage|entitle\w*|"
-    r"conditions|disconnect|after hours|training|unpaid|underpa\w*|owed?|allowed|legal)\b",
+    r"conditions|disconnect|after hours|training|unpaid|underpa\w*|owed?|allowed|legal|"
+    # WorkSafe Victoria guidance (step 15)
+    r"safe\w*|unsafe|ohs|hsrs?|health and safety|hazard\w*|injur\w*|accident\w*|incident\w*|"
+    r"worksafe|workcover|compensation|bully\w*|harass\w*|aggression|violence|heat|stress)\b",
     _I,
 )
 

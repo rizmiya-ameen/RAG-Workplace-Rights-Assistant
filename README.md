@@ -2,15 +2,17 @@
 
 A retrieval-augmented assistant for Australian workplace rights. It answers questions about
 Modern Awards (Hospitality MA000009, General Retail MA000004, Fast Food MA000003, Clerks
-MA000002), with the National Employment Standards and WorkSafe Victoria guidance to follow,
-and cites the exact clause every time (for example `MA000009:28.2`).
+MA000002), the National Employment Standards (Fair Work Act 2009, Part 2-2) and WorkSafe
+Victoria guidance, and cites the exact source every time (for example `MA000009:28.2`,
+`NES:s117` or `WSV:what-do-when-youve-been-injured-work:first-steps`).
 
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–14 of 22 are done. Retrieval with a cross-encoder
-> re-ranker, cited answers (`POST /chat`), exact pay rates from a structured tool, guardrails
-> and the full evaluation work; NES and WorkSafe sources and the web UI come next.
+> Work in progress: build steps 1–15 of 22 are done. Four awards, the NES and 12 WorkSafe
+> pages; retrieval with a cross-encoder re-ranker, cited answers (`POST /chat`), exact pay
+> rates from a structured tool, guardrails and the full evaluation work; the Prompt Guard
+> classifier and the web UI come next.
 
 ## How it works
 
@@ -22,8 +24,12 @@ pay_rate: SQL on pay_rates -> LLM only phrases the tool result
 all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -> user
 ```
 
-- **Ingestion:** award pages from awards.fairwork.gov.au (domain allow-list), parsed into one
-  chunk per clause (1,163 chunks) and embedded with `bge-small-en-v1.5` via fastembed (ONNX).
+- **Ingestion:** award pages from awards.fairwork.gov.au, the Fair Work Act text from
+  legislation.gov.au and 12 worker-facing pages from worksafe.vic.gov.au (exact-host
+  allow-list). One chunk per award clause (1,163), per NES section (109 sections, 144 chunks)
+  and per WorkSafe page section (89), embedded with `bge-small-en-v1.5` via fastembed (ONNX).
+  Each document keeps its own date: award amendment date, Act compilation date, WorkSafe
+  "Reviewed on" date.
 - **Pay rates:** read from the awards' own rate tables into a structured `pay_rates` table
   (1,227 adult rates), cross-checked against each other. The LLM never reads pay amounts from
   text.
@@ -125,12 +131,15 @@ the user gets no number rather than a wrong one.
 
 ## Evaluation
 
-The golden set (`eval/golden_set.jsonl`) has 59 answerable questions, each with expected
-clauses and an evidence quote, plus 10 questions the assistant should decline. A test
-re-parses the saved awards and checks that every quote appears word for word in the clause it
-cites, so the eval data cannot contain invented clauses.
+The golden set (`eval/golden_set.jsonl`) has 77 answerable questions (59 on the awards, 10 on
+the NES, 8 on WorkSafe guidance), each with expected clauses and an evidence quote, plus 9
+questions the assistant should decline. A test re-parses the saved sources and checks that
+every quote appears word for word in the clause it cites, so the eval data cannot contain
+invented clauses. (Step 15 turned one decline question, reporting an injury to WorkSafe,
+into an answerable one.)
 
-Retrieval, top 6 results, award filter applied when the question names an industry:
+Retrieval on the first 59 award questions, top 6 results, award filter applied when the
+question names an industry:
 
 | Retrieval | hit@1 | hit@6 | MRR@6 | hit@24 | p50 latency |
 |---|---|---|---|---|---|
@@ -153,6 +162,23 @@ it matches hybrid on hit@6, is simpler, and hybrid lost one question's clause fr
 The cost is latency on CPU. Each batch is padded to its longest clause, so batches of 2 took
 ~1.5 s for 24 clauses on the dev laptop against ~3.5 s for one batch of 24. (*Hybrid +
 re-ranker was measured before that change.)
+
+With the NES and WorkSafe added (77 questions; not comparable row for row with the table
+above):
+
+| Retrieval (step 15) | hit@1 | hit@6 | MRR@6 | p50 latency |
+|---|---|---|---|---|
+| Vector only | 0.62 | 0.88 | 0.722 | 81 ms |
+| **Vector + re-ranker** (used by `/chat`) | **0.77** | **0.96** | **0.832** | 3.5 s |
+
+A question naming an award also searches the NES and WorkSafe pages, since they apply to
+every award's employees. The first version put all of them in one top-24 pool, and the 233
+general chunks pushed two award clauses out of it (right to disconnect, pay deductions):
+hit@6 0.94. Now the award gets its own top 24 and the general documents their own top 8,
+and the re-ranker picks across both (0.96, with a regression test). The cost is 32 clauses
+to re-rank instead of 24 (p50 2.4 s → 3.5 s on the laptop CPU). Still missed: retail-10
+(not in the candidates), and two NES questions where the award's own 38-hour and
+casual-conversion clauses outrank the NES section.
 
 **Relevance gate.** If the best re-rank score is below −9.7, the app answers "insufficient
 context" without calling the LLM. The scores overlap too much for a tighter gate: a found

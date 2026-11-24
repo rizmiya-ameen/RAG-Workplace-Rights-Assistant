@@ -153,3 +153,17 @@ def test_pii_at_end_of_sentence_is_redacted():
     redacted, counts = redact_pii("My TFN is 123 456 782. BSB 062-000.")
     assert redacted == "My TFN is [TFN]. BSB [BSB]."
     assert counts == {"TFN": 1, "BSB": 1}
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is a health and safety representative?",  # was out_of_scope before step 15
+        "Can I refuse unsafe work?",
+        "How do I report bullying to WorkSafe?",
+        "Is it too hot to keep working outside?",
+        "What are notifiable incidents?",
+    ],
+)
+def test_worksafe_questions_are_in_scope(question):
+    assert check_input(question).route == "pass"

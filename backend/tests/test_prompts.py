@@ -37,7 +37,7 @@ def test_sources_are_wrapped_with_their_citation_id(chunks):
         "What is the casual loading?", [_hit(chunks["11.1"])], "c", {"MA000009": "Hospitality"}
     )
     user = messages[1]["content"]
-    assert '<source id="MA000009:11.1" award="Hospitality"' in user
+    assert '<source id="MA000009:11.1" document="Hospitality"' in user
     assert chunks["11.1"].content in user  # no amounts or markup in 11.1: passed as is
     assert user.endswith("<question>What is the casual loading?</question>")
 

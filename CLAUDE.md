@@ -47,7 +47,9 @@ all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -
 - **Tables**: `documents` (versioned by `effective_date`), `chunks` (one per clause, embedding +
   tsvector), `pay_rates` (structured), `guardrail_events`, optional `eval_runs`.
 - **Citations**: awards `MA0000XX:<clause>` (`28.2`, `15A.1`, `B.2.1`; long clauses split as
-  `28.2#1`), NES `NES:s<section>`, WorkSafe `WSV:<slug>#<heading>`.
+  `28.2#1`), NES `NES:s<section>` (`NES:s117#1`), WorkSafe `WSV:<page slug>:<section slug>`
+  (`WSV:what-do-when-youve-been-injured-work:first-steps`; not `#<heading>`: "#n" marks split
+  parts, and citation matching splits on "#").
 - **Guardrails** (`backend/app/guardrails/`): input (length, PII redaction, injection patterns +
   Prompt Guard classifier, evasion patterns, advice -> refer, scope), context (domain allow-list,
   tag stripping, sources wrapped as data), output (canary, citation validation, dollar amounts
@@ -95,6 +97,11 @@ uv run python -m app.ingestion.parse_award --all           # parse + validate
 uv run python -m app.ingestion.parse_award --award MA000009 --show 28.2
 uv run python -m app.ingestion.parse_rates --all           # pay rates: parse + cross-check
 uv run python -m app.ingestion.parse_rates --award MA000009 --show "Level 2"
+uv run python -m app.ingestion.fetch --nes                 # Fair Work Act text (2 requests, 10 s apart)
+uv run python -m app.ingestion.fetch --worksafe            # WORKSAFE_PAGES (12 pages)
+uv run python -m app.ingestion.parse_nes --show 117        # parse + validate; one section
+uv run python -m app.ingestion.parse_worksafe --show bullying
+uv run python -m app.ingestion.ingest --nes                # or --worksafe
 uv run python -m app.ingestion.ingest --all                # skips unchanged chunks; --force
                                                            # (pay rates reload every run)
 uv run python -m app.retrieval.search "Do casuals get more on Sundays?" --mode hybrid --award MA000009
@@ -309,9 +316,42 @@ golden, no LLM). `uv run python -m app.tools.pay_rates MA000009 --level 2 --type
   "hourly pay", "getting", chain names). Answers eval: `--sets` now includes routes
   (route_failures: route + every expected amount in the answer); answer_rate counts
   pay_rate as answered. 565 tests pass.
-  TODO when the Gemini quota resets: a fresh full `--mode answers` run (~150 calls) for the
-  "+ router" README row; the step 13 partial run is kept as it is in the README.
-- Next: step 15 (NES and WorkSafe ingestion).
+  The answers row is covered by the step 15 TODO below.
+- Step 15 (NES and WorkSafe): done. Allow-list + `www.legislation.gov.au`,
+  `www.worksafe.vic.gov.au` (exact hosts, tests). NES: `fetch_nes()` reads the Act page
+  (`C2009A00028/latest/text`), finds the EPUB text link
+  (`/C2009A00028/<date>/<date>/text/original/epub/OEBPS/document_1/document_1.html`, date =
+  compilation, 2026-07-07), waits 10 s (robots Crawl-delay), saves `NES_<date>.html` (2 MB);
+  documents.url = the readable Act page. `parse_nes.py`: Part 2-2 only (from its ActHead2 to
+  the next ActHead1/2); ActHead3/4 = Division/Subdivision (heading path), ActHead5 = section
+  (number from CharSectno), body per <p>, tables per row (s117 notice, s119 redundancy
+  tables), U+2011 -> "-"; 109 sections s59-s131, 144 chunks. WorkSafe: `WORKSAFE_PAGES` (12
+  content pages; hub pages like /bullying, /working-alone are mostly links, swapped for the
+  pages they link to), `fetch_worksafe(slug)` (slug regex), date = "Reviewed on dd/mm/yyyy"
+  (outside <main>), files `WSV-<slug>_<date>.html` (no ":" on Windows; `latest_raw` maps).
+  `parse_worksafe.py`: <main>, one chunk per <h2> (text before = "overview"), skips
+  breadcrumb/notice-strip/card-grid/video-grid/nav/buttons and bare "Find out more" lines,
+  accordion panels kept, p inside li read once; 89 chunks. Page HTML has per-request tokens,
+  so its sha256 changes on every fetch (re-embeds, cheap). `ingest --nes / --worksafe` via
+  `ingest_parsed()`. Search: an award filter also admits NES + WorkSafe (`general=True`);
+  separate pools: award top 24 + general top `GENERAL_CANDIDATES` 8, merged by distance (one
+  shared pool lost hosp-07/hosp-22: hit@6 0.94 -> 0.96 after; regression test). Prompt: covers
+  NES/WorkSafe, citation examples, source attribute `document=` (was `award=`). Input-guard
+  scope + safety words (safe, OHS, HSR, hazard, injury, WorkSafe, bullying, harassment,
+  heat...; "What is a health and safety representative?" was out_of_scope; tests). Router:
+  redundancy/notice/leave/super/compensation amounts -> rag. Texts for insufficient and
+  out_of_scope name the new sources. Golden: +10 NES (nes-01..10), +8 WorkSafe (wsv-01..08;
+  wsv-01 was decline-05) = 77 answerable + 9 decline; test reads NES/WSV citations
+  (`split_citation`: WSV splits at the last ":"). Retrieval (77): vector 0.62 / 0.88 / 0.722;
+  vector+rerank hit@1 0.77, hit@6 0.96, MRR 0.832, p50 3.5 s (32 candidates). Misses:
+  retail-10, nes-01 (award 38h clauses outrank s62), nes-10. Red-team input 44/44, routes
+  29/29, golden routes 86/86. Fixtures: `NES_excerpt.html` (Part 2-2 heading through s64,
+  s117, Part 2-3 heading), `WSV_injured_excerpt.html` (<main> through "Reviewed on"),
+  byte-exact slices. Fixed 2 flaky DB search tests (tied distances come back in varying
+  order; assert rank 1 only). 648 tests pass.
+  TODO when the Gemini quota resets: a fresh full `--mode answers` run (~170 calls now) for
+  the "+ router" and "+ NES/WorkSafe" README rows.
+- Next: step 16 (Prompt Guard classifier).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon

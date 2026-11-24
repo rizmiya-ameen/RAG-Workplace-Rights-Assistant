@@ -10,7 +10,7 @@ Modes:
   matches; words in more than MAX_DF of chunks are dropped), ranked with ts_rank_cd.
 
 Only the latest effective_date per source_id is searched (older award versions are kept for
-history). `award` filters to one source_id, e.g. "MA000009".
+history). `award` keeps one award, e.g. "MA000009", plus the NES and WorkSafe documents.
 """
 
 import argparse
@@ -24,14 +24,27 @@ from app.embeddings import embed_query
 from app.retrieval.rerank import rerank as rerank_hits
 
 CANDIDATES = 24  # per retriever, before fusion (and later, before re-ranking)
+# With an award filter, the NES and WorkSafe documents get their own small pool: in one
+# shared top 24 their 233 chunks pushed award clauses out (step 15 eval: hosp-07, hosp-22).
+GENERAL_CANDIDATES = 8
 RRF_K = 60
 MODES = ("vector", "hybrid")
 
+# `awards`: award documents (only `award` if given); `general`: the NES and WorkSafe guidance,
+# which apply to every award's employees (step 15).
 _LATEST = """
     latest AS (
         SELECT DISTINCT ON (source_id) id, source_id
         FROM documents
-        WHERE %(award)s::text IS NULL OR source_id = %(award)s
+        WHERE (%(awards)s AND doc_type = 'award'
+               AND (%(award)s::text IS NULL OR source_id = %(award)s))
+           OR (%(general)s AND doc_type <> 'award')
+        ORDER BY source_id, effective_date DESC
+    )"""
+_LATEST_SOURCE = """
+    latest AS (
+        SELECT DISTINCT ON (source_id) id, source_id
+        FROM documents WHERE source_id = %(award)s
         ORDER BY source_id, effective_date DESC
     )"""
 
@@ -91,14 +104,34 @@ def rrf(rankings: list[list[int]], k: int = RRF_K) -> dict[int, float]:
     return scores
 
 
-def _vector(conn, vec: list[float], award: str | None, n: int) -> list[tuple]:
+def _vector(
+    conn, vec: list[float], award: str | None, n: int, *, awards: bool = True, general: bool
+) -> list[tuple]:
     # Exact ordering even when the award filter removes most HNSW candidates (pgvector 0.8).
     conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
-    return conn.execute(_VECTOR_SQL, {"vec": str(vec), "award": award, "n": n}).fetchall()
+    params = {"vec": str(vec), "award": award, "n": n, "awards": awards, "general": general}
+    return conn.execute(_VECTOR_SQL, params).fetchall()
 
 
-def _text(conn, text: str, award: str | None, n: int) -> list[tuple]:
-    params = {"text": text, "award": award, "n": n, "max_df": MAX_DF}
+def _vector_pools(conn, vec: list[float], award: str | None, n: int, general: bool) -> list[tuple]:
+    """No award: one pool over everything. An award plus general: the award's top n and the
+    general documents' top GENERAL_CANDIDATES, merged by distance."""
+    if award is None or not general:
+        return _vector(conn, vec, award, n, general=general)
+    rows = _vector(conn, vec, award, n, general=False)
+    rows += _vector(conn, vec, award, GENERAL_CANDIDATES, awards=False, general=True)
+    return sorted(rows, key=lambda r: (r[6], r[0]))
+
+
+def _text(conn, text: str, award: str | None, n: int, general: bool) -> list[tuple]:
+    params = {
+        "text": text,
+        "award": award,
+        "n": n,
+        "max_df": MAX_DF,
+        "awards": True,
+        "general": general,
+    }
     return conn.execute(_TEXT_SQL, params).fetchall()
 
 
@@ -111,22 +144,24 @@ def search(
     k: int = 6,
     candidates: int = CANDIDATES,
     rerank: bool = False,
+    general: bool = True,
     embed: Callable[[str], list[float]] = embed_query,
     rerank_fn: Callable[..., list[Hit]] = rerank_hits,
 ) -> list[Hit]:
     """Top k hits. With rerank=True the retriever's top `candidates` are re-ordered by the
-    cross-encoder and the best k returned (each with rerank_score)."""
+    cross-encoder and the best k returned (each with rerank_score). With an `award`,
+    general=True also searches the NES and WorkSafe documents (they apply to every award)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
-    vec_rows = _vector(conn, embed(query), award, candidates)
+    vec_rows = _vector_pools(conn, embed(query), award, candidates, general)
     rows = {r[0]: r for r in vec_rows}
     distance = {r[0]: r[6] for r in vec_rows}
 
-    keep = candidates if rerank else k
+    keep = len(vec_rows) if rerank and mode == "vector" else candidates if rerank else k
     if mode == "vector":
         ranked = [(r[0], 1.0 - r[6]) for r in vec_rows[:keep]]
     else:
-        text_rows = _text(conn, query, award, candidates)
+        text_rows = _text(conn, query, award, candidates, general)
         rows.update({r[0]: r for r in text_rows if r[0] not in rows})
         fused = rrf([[r[0] for r in vec_rows], [r[0] for r in text_rows]])
         ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:keep]
@@ -136,7 +171,7 @@ def search(
 
 
 _CLAUSES_SQL = f"""
-    WITH {_LATEST}
+    WITH {_LATEST_SOURCE}
     SELECT c.id, l.source_id, c.clause_ref, c.heading, c.content, c.is_rate_table
     FROM chunks c JOIN latest l ON l.id = c.document_id
     WHERE split_part(c.clause_ref, '#', 1) = ANY(%(refs)s)

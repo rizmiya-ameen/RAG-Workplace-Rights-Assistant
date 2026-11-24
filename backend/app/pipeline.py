@@ -38,7 +38,8 @@ DISCLAIMER = (
     "Fair Work Ombudsman on 13 13 94 about your own situation."
 )
 INSUFFICIENT_TEXT = (
-    "I couldn't find this in the award clauses I have, so I can't answer it reliably. "
+    "I couldn't find this in the sources I have (four awards, the National Employment "
+    "Standards and WorkSafe Victoria guidance), so I can't answer it reliably. "
     "The Fair Work Ombudsman (13 13 94, fairwork.gov.au) can help."
 )
 FALLBACK_TEXT = (
@@ -63,9 +64,10 @@ ROUTE_TEXT = {
         "explain what an award says in general if you ask about the rule itself."
     ),
     "out_of_scope": (
-        "I can only help with Australian workplace awards: pay, hours, rosters, leave, breaks "
+        "I can only help with Australian workplace rights: pay, hours, rosters, leave, breaks "
         "and similar conditions under the Hospitality, General Retail, Fast Food and Clerks "
-        "awards."
+        "awards and the National Employment Standards, and workplace health and safety in "
+        "Victoria."
     ),
 }
 

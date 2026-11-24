@@ -11,7 +11,7 @@ from app.db.conn import apply_schema, connect
 from app.embeddings import DIMS
 from app.ingestion.ingest import ingest_document
 from app.ingestion.parse_award import parse_award_html
-from app.retrieval.search import CANDIDATES, RRF_K, rrf, search
+from app.retrieval.search import CANDIDATES, GENERAL_CANDIDATES, RRF_K, rrf, search
 
 FIXTURE = Path(__file__).parent / "fixtures" / "MA000002_excerpt.html"
 AWARD = "TEST-SEARCH"
@@ -66,10 +66,10 @@ def chunks():
     return parse_award_html(FIXTURE.read_bytes()).chunks
 
 
-def meta(date: str, sha: str) -> dict:
+def meta(date: str, sha: str, source_id: str = AWARD, doc_type: str = "award") -> dict:
     return {
-        "source_id": AWARD,
-        "doc_type": "award",
+        "source_id": source_id,
+        "doc_type": doc_type,
         "title": "Test copy",
         "url": "https://example.invalid",
         "effective_date": date,
@@ -101,16 +101,21 @@ def test_vector_search_ranks_nearest_chunk_first(conn, chunks, doc):
 
 def test_only_latest_version_and_chosen_award_are_searched(conn, doc):
     for mode in ("vector", "hybrid"):
-        hits = search(conn, "right to disconnect", mode=mode, award=AWARD, k=20, embed=axis0)
+        hits = search(
+            conn, "right to disconnect", mode=mode, award=AWARD, k=20, embed=axis0, general=False
+        )
         assert hits and all(h.source_id == AWARD for h in hits)
         assert {h.chunk_id for h in hits} <= set(doc.values())  # none from the 1999 version
 
 
 def test_hybrid_adds_full_text_matches(conn, doc):
-    # The query vector points at chunk 0, so only full-text search can find clause 13A.
-    vector = search(conn, "right to disconnect", mode="vector", award=AWARD, embed=axis0)
-    hybrid = search(conn, "right to disconnect", mode="hybrid", award=AWARD, embed=axis0)
-    assert not any(h.clause_ref.startswith("13A") for h in vector)
+    # The query vector points at chunk 0; every other chunk ties at distance 1.0, so the vector
+    # retriever has no reason to rank 13A (ties come back in index order, which varies).
+    # Full text matches "disconnect" in 13A and fusion puts it near the top.
+    kw = {"award": AWARD, "embed": axis0, "general": False}
+    vector = search(conn, "right to disconnect", mode="vector", k=1, **kw)
+    hybrid = search(conn, "right to disconnect", mode="hybrid", k=3, **kw)
+    assert not vector[0].clause_ref.startswith("13A")
     assert any(h.clause_ref.startswith("13A") for h in hybrid)
 
 
@@ -121,7 +126,7 @@ def test_unknown_mode_is_refused(conn):
 
 def test_rerank_reorders_the_candidate_pool(conn, doc):
     # The vector query points at chunk 0; the fake re-ranker prefers clause 13A, which is
-    # outside the vector top 6 but inside the 24 candidates.
+    # not ranked first by the vector retriever but inside the 24 candidates.
     seen = {}
 
     def fake_rerank(query, hits, *, k):
@@ -129,11 +134,36 @@ def test_rerank_reorders_the_candidate_pool(conn, doc):
         ordered = sorted(hits, key=lambda h: not h.clause_ref.startswith("13A"))
         return [replace(h, rerank_score=1.0) for h in ordered[:k]]
 
-    plain = search(conn, "q", mode="vector", award=AWARD, embed=axis0)
-    hits = search(
-        conn, "q", mode="vector", award=AWARD, embed=axis0, rerank=True, rerank_fn=fake_rerank
-    )
-    assert not any(h.clause_ref.startswith("13A") for h in plain)
+    kw = {"award": AWARD, "embed": axis0, "general": False}
+    plain = search(conn, "q", mode="vector", **kw)
+    hits = search(conn, "q", mode="vector", rerank=True, rerank_fn=fake_rerank, **kw)
+    assert not plain[0].clause_ref.startswith("13A")  # ranks 2-6 tie; their order varies
     assert seen["n"] == min(CANDIDATES, len(doc))
     assert hits[0].clause_ref.startswith("13A") and len(hits) == 6
     assert all(h.rerank_score == 1.0 for h in hits)
+
+
+def test_award_filter_keeps_nes_and_worksafe_documents(conn, chunks, doc):
+    """NES and WorkSafe guidance apply to every award's employees (step 15)."""
+    ingest_document(conn, meta("2000-07-01", "nes", "TEST-NES", "nes"), chunks, embed=one_hot_embed)
+    kw = {"mode": "vector", "award": AWARD, "embed": axis0, "k": 10}
+    with_general = {h.source_id for h in search(conn, "q", **kw)}
+    award_only = {h.source_id for h in search(conn, "q", general=False, **kw)}
+    assert "TEST-NES" in with_general and AWARD in with_general
+    assert award_only == {AWARD}
+
+
+def test_general_documents_do_not_crowd_out_award_candidates(conn, chunks, doc):
+    """Regression (step 15 eval): in one shared top 24, NES/WorkSafe chunks pushed award
+    clauses out of the re-ranker's pool. The award keeps its own top `candidates`."""
+    ingest_document(conn, meta("2000-07-01", "nes", "TEST-NES", "nes"), chunks, embed=one_hot_embed)
+
+    def keep_all(query, hits, *, k):
+        return hits
+
+    kw = {"mode": "vector", "award": AWARD, "embed": axis0, "rerank": True, "candidates": 5}
+    alone = search(conn, "q", general=False, rerank_fn=keep_all, **kw)
+    mixed = search(conn, "q", rerank_fn=keep_all, **kw)
+    award_ids = [h.chunk_id for h in mixed if h.source_id == AWARD]
+    assert sorted(award_ids) == sorted(h.chunk_id for h in alone)
+    assert 0 < sum(h.source_id != AWARD for h in mixed) <= GENERAL_CANDIDATES

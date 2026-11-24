@@ -71,7 +71,10 @@ _NOT_IN_TOOL = re.compile(
     r"\b(?:overtime|evening|night|midnight|shift\s*work(?:er)?s?|late\s+(?:shift|work)"
     r"|early\s+morning"
     r"|allowances?|junior|apprentices?|trainees?|under\s+(?:1[5-9]|2[01])|aged?\s+1\d"
-    r"|1\d[- ]year[- ]olds?|higher\s+duties|uniform|laundry|meal|tool|vehicle|travel)\b",
+    r"|1\d[- ]year[- ]olds?|higher\s+duties|uniform|laundry|meal|tool|vehicle|travel"
+    # NES and WorkSafe entitlements paid in other ways (step 15)
+    r"|redundan\w*|severance|notice|leave|super(?:annuation)?|compensation|workcover"
+    r"|weekly\s+payments)\b",
     re.IGNORECASE,
 )
 _TYPES = [

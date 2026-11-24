@@ -270,7 +270,7 @@ def validate(result: ParseResult, limit: int = MAX_CHARS) -> list[str]:
 
 def latest_raw(award_id: str, raw_dir: Path | None = None) -> tuple[Path, dict]:
     raw_dir = raw_dir or get_settings().data_dir / "raw"
-    sidecars = sorted(raw_dir.glob(f"{award_id}_*.json"))
+    sidecars = sorted(raw_dir.glob(f"{award_id.replace(':', '-')}_*.json"))  # "WSV:x" -> "WSV-x"
     if not sidecars:
         raise FileNotFoundError(f"no saved page for {award_id}; run app.ingestion.fetch first")
     meta = json.loads(sidecars[-1].read_text("utf-8"))

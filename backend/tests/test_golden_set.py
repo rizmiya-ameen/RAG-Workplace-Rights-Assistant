@@ -1,8 +1,8 @@
 """Golden-set integrity and eval-metric tests.
 
 Every evidence quote must appear verbatim (whitespace-normalised) in the clause it cites, in
-the parsed saved award, and every expected clause must exist. This keeps invented clauses or
-quotes out of the eval data.
+the parsed saved source (award, NES or WorkSafe page), and every expected clause must exist.
+This keeps invented clauses or quotes out of the eval data.
 """
 
 from functools import cache
@@ -11,23 +11,41 @@ import pytest
 
 from app.eval.run_eval import first_hit_rank, load_golden, retrieval_metrics
 from app.ingestion.parse_award import latest_raw, parse_award_html
+from app.ingestion.parse_nes import parse_nes_html
+from app.ingestion.parse_worksafe import parse_worksafe_html
 
 GOLDEN = load_golden()
 ANSWERABLE = [g for g in GOLDEN if g["expected"]]
 
 
 @cache
-def clauses(award_id: str) -> dict[str, str]:
+def clauses(source_id: str) -> dict[str, str]:
     """base clause ref -> whitespace-normalised text of all its chunks."""
-    path, _ = latest_raw(award_id)
+    path, _ = latest_raw(source_id)
+    if source_id == "NES":
+        parse = parse_nes_html
+    elif source_id.startswith("WSV:"):
+        parse = parse_worksafe_html
+    else:
+        parse = parse_award_html
     out: dict[str, list[str]] = {}
-    for c in parse_award_html(path.read_bytes()).chunks:
+    for c in parse(path.read_bytes()).chunks:
         out.setdefault(c.clause_ref.split("#")[0], []).append(c.content)
     return {ref: " ".join(" ".join(parts).split()) for ref, parts in out.items()}
 
 
+def split_citation(citation: str) -> tuple[str, str]:
+    """ "MA000009:28.2" -> ("MA000009", "28.2"); "NES:s62" -> ("NES", "s62");
+    "WSV:<page>:<section>" -> ("WSV:<page>", "<section>")."""
+    if citation.startswith("WSV:"):
+        source, ref = citation.rsplit(":", 1)
+        return source, ref
+    source, ref = citation.split(":", 1)
+    return source, ref
+
+
 def lookup(citation: str) -> str | None:
-    award_id, ref = citation.split(":", 1)
+    award_id, ref = split_citation(citation)
     try:
         return clauses(award_id).get(ref)
     except FileNotFoundError:
@@ -41,15 +59,18 @@ def test_ids_are_unique_and_fields_present():
         assert {"id", "question", "award", "expected", "evidence"} <= set(g), g["id"]
         if g["expected"]:
             assert g["evidence"], f"{g['id']}: answerable item needs evidence"
-            if g["award"]:
-                assert all(e.startswith(g["award"] + ":") for e in g["expected"]), g["id"]
+            if g["award"]:  # the award filter keeps that award plus the NES and WorkSafe
+                ok = (g["award"] + ":", "NES:", "WSV:")
+                assert all(e.startswith(ok) for e in g["expected"]), g["id"]
         else:
             assert g["decline_reason"], g["id"]
 
 
 def test_set_size_matches_plan():
     assert len(ANSWERABLE) >= 50
-    assert len(GOLDEN) - len(ANSWERABLE) >= 10
+    assert len(GOLDEN) - len(ANSWERABLE) >= 9  # decline-05 became answerable in step 15
+    sources = {split_citation(c)[0].split(":")[0] for g in ANSWERABLE for c in g["expected"]}
+    assert {"NES", "WSV"} <= sources
 
 
 @pytest.mark.parametrize("item", ANSWERABLE, ids=lambda g: g["id"])

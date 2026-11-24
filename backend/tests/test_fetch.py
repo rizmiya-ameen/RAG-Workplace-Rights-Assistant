@@ -100,3 +100,75 @@ def test_fetch_award_saves_html_and_sidecar(tmp_path):
     assert meta["effective_date"] == "2026-07-01"
     assert meta["source_id"] == "MA000009"
     assert meta["doc_type"] == "award"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.legislation.gov.au/C2009A00028/latest/text",
+        "https://www.worksafe.vic.gov.au/bullying",
+    ],
+)
+def test_nes_and_worksafe_hosts_are_allowed(url):
+    check_allowed(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://legislation.gov.au/C2009A00028/latest/text",  # exact host only (no www)
+        "https://worksafe.vic.gov.au/bullying",
+        "https://www.worksafe.vic.gov.au.evil.example/bullying",
+        "http://www.legislation.gov.au/C2009A00028/latest/text",
+    ],
+)
+def test_lookalike_nes_and_worksafe_urls_are_refused(url):
+    with pytest.raises(FetchRefused):
+        check_allowed(url)
+
+
+def test_worksafe_slug_is_validated():
+    from app.ingestion.fetch import worksafe_url
+
+    assert worksafe_url("bullying") == "https://www.worksafe.vic.gov.au/bullying"
+    for bad in ("../admin", "bullying?x=1", "a/b", "Bullying", ""):
+        with pytest.raises(ValueError):
+            worksafe_url(bad)
+
+
+def test_fetch_nes_reads_the_compilation_link_and_saves(tmp_path):
+    from app.ingestion.fetch import NES_PAGE_URL, fetch_nes
+
+    doc_url = (
+        "https://www.legislation.gov.au/C2009A00028/2026-07-07/2026-07-07/text/original/epub/"
+        "OEBPS/document_1/document_1.html"
+    )
+    page = f'<a href="{doc_url}#_Toc1" target="epubFrame">61 The NES</a>'.encode()
+    body = (Path(__file__).parent / "fixtures" / "NES_excerpt.html").read_bytes()
+    seen, slept = [], []
+
+    def fake_download(url):
+        seen.append(url)
+        return page if url == NES_PAGE_URL else body
+
+    doc = fetch_nes(raw_dir=tmp_path, downloader=fake_download, sleep=slept.append)
+    assert seen == [NES_PAGE_URL, doc_url] and slept == [10]
+    assert doc.source_id == "NES" and doc.doc_type == "nes"
+    assert doc.effective_date == "2026-07-07" and doc.url == NES_PAGE_URL
+    assert (tmp_path / "NES_2026-07-07.html").read_bytes() == body
+    assert json.loads((tmp_path / "NES_2026-07-07.json").read_text("utf-8"))["html_path"] == (
+        "NES_2026-07-07.html"
+    )
+
+
+def test_fetch_worksafe_saves_under_a_windows_safe_name(tmp_path):
+    from app.ingestion.fetch import fetch_worksafe
+    from app.ingestion.parse_award import latest_raw
+
+    body = (Path(__file__).parent / "fixtures" / "WSV_injured_excerpt.html").read_bytes()
+    slug = "what-do-when-youve-been-injured-work"
+    doc = fetch_worksafe(slug, raw_dir=tmp_path, downloader=lambda url: body)
+    assert doc.source_id == f"WSV:{slug}" and doc.effective_date == "2024-11-27"
+    assert doc.title == "WorkSafe Victoria: What to do when you’ve been injured at work"
+    path, meta = latest_raw(f"WSV:{slug}", raw_dir=tmp_path)
+    assert path.name == f"WSV-{slug}_2024-11-27.html" and meta["doc_type"] == "worksafe"
