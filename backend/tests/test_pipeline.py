@@ -1,0 +1,192 @@
+"""answer_question() with a fake retriever, fake LLM and fake connection (no network, no DB).
+Clause text comes from the verbatim MA000009 fixture."""
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import main
+from app.ingestion.parse_award import parse_award_html
+from app.llm import LLMError, LLMReply
+from app.pipeline import DISCLAIMER, FALLBACK_TEXT, INSUFFICIENT_TEXT, answer_question
+from app.retrieval.search import Hit
+
+FIXTURE = Path(__file__).parent / "fixtures" / "MA000009_excerpt.html"
+TITLE, URL = (
+    "Hospitality Industry (General) Award 2020",
+    "https://awards.fairwork.gov.au/MA000009.html",
+)
+
+
+class FakeConn:
+    def __init__(self):
+        self.events = []
+
+    def execute(self, sql, params=None):
+        if "guardrail_events" in sql:
+            self.events.append(params[1:3])  # (stage, rule)
+            return self
+        self.rows = [(sid, TITLE, URL) for sid in params[0]]
+        return self
+
+    def fetchall(self):
+        return self.rows
+
+
+@pytest.fixture(scope="module")
+def hits():
+    chunks = {c.clause_ref: c for c in parse_award_html(FIXTURE.read_bytes()).chunks}
+    return [
+        Hit(i, "MA000009", c.clause_ref, c.heading, c.content, c.is_rate_table, 0.8)
+        for i, c in enumerate((chunks["11.1"], chunks["B.2.3"]), 1)
+    ]
+
+
+def _llm(content=None, **body):
+    """Fake chat_fn. content=callable(messages) -> str lets a test echo the prompt."""
+    seen = []
+
+    def chat_fn(messages):
+        seen.append(messages)
+        raw = content(messages) if callable(content) else content
+        if raw is None:
+            raw = json.dumps(
+                {"answer": "Casuals get a 25% loading.", "citations": ["MA000009:11.1"]} | body
+            )
+        return LLMReply(raw, "stop", {}, 10.0, 1)
+
+    chat_fn.seen = seen
+    return chat_fn
+
+
+def _ask(hits, chat_fn, conn=None, question="What is the casual loading?"):
+    conn = conn or FakeConn()
+    search_fn = lambda *a, **k: hits
+    return answer_question(conn, question, search_fn=search_fn, chat_fn=chat_fn), conn
+
+
+def test_answer_with_citations_and_disclaimer(hits):
+    r, conn = _ask(hits, _llm())
+    assert r.route == "rag"
+    assert r.answer == "Casuals get a 25% loading."
+    assert [c.id for c in r.citations] == ["MA000009:11.1"]
+    assert r.citations[0].title == TITLE and r.citations[0].url == URL
+    assert r.citations[0].clause_text == hits[0].content
+    assert r.disclaimer == DISCLAIMER
+    assert re.fullmatch(r"[0-9a-f]{32}", r.request_id)
+    # B.2.3 is a rate table: its amounts were masked before the LLM saw them.
+    assert ("context", "amounts_masked") in conn.events
+
+
+def test_rate_table_amounts_never_reach_the_llm(hits):
+    chat_fn = _llm()
+    _ask(hits, chat_fn)
+    prompt = json.dumps(chat_fn.seen[0])
+    assert "47.39" not in prompt and "33.85" not in prompt
+
+
+def test_canary_leak_is_blocked_and_logged(hits):
+    def leak(messages):
+        canary = re.search(r"CANARY-[0-9a-f]{16}", messages[0]["content"]).group(0)
+        return json.dumps({"answer": f"My reference is {canary}", "citations": ["MA000009:11.1"]})
+
+    r, conn = _ask(hits, _llm(leak))
+    assert r.route == "fallback" and r.answer == FALLBACK_TEXT and r.citations == []
+    assert "CANARY" not in r.answer
+    assert ("output", "canary_leak") in conn.events
+    assert "canary_leak" in r.guardrails
+
+
+def test_invented_citation_means_fallback(hits):
+    r, conn = _ask(hits, _llm(citations=["MA000009:28.2"]))
+    assert r.route == "fallback"
+    assert ("output", "citation_dropped") in conn.events
+    assert ("output", "no_valid_citation") in conn.events
+
+
+def test_invalid_json_means_fallback(hits):
+    r, conn = _ask(hits, _llm("The casual loading is 25%."))
+    assert r.route == "fallback" and ("output", "invalid_json") in conn.events
+
+
+def test_insufficient_context_uses_fixed_text(hits):
+    r, _ = _ask(
+        hits, _llm(answer="I think it is about 10 hours.", citations=[], insufficient_context=True)
+    )
+    assert r.route == "insufficient_context"
+    assert r.answer == INSUFFICIENT_TEXT and r.citations == []
+
+
+def test_clarify_route(hits):
+    r, _ = _ask(
+        hits, _llm(answer="Are you casual or permanent?", citations=[], needs_clarification=True)
+    )
+    assert r.route == "clarify" and r.answer == "Are you casual or permanent?"
+
+
+def test_no_hits_skips_the_llm():
+    chat_fn = _llm()
+    r, _ = _ask([], chat_fn)
+    assert r.route == "insufficient_context" and chat_fn.seen == []
+
+
+# --- POST /chat ---------------------------------------------------------------------------
+
+client = TestClient(main.app)
+
+
+class _ConnCtx:
+    def __enter__(self):
+        return FakeConn()
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def fake_backend(monkeypatch, hits):
+    def fake_answer(conn, question, *, award=None):
+        return answer_question(
+            conn, question, award=award, search_fn=lambda *a, **k: hits, chat_fn=_llm()
+        )
+
+    monkeypatch.setattr(main, "connect", lambda: _ConnCtx())
+    monkeypatch.setattr(main, "answer_question", fake_answer)
+
+
+def test_chat_endpoint_returns_cited_answer(fake_backend):
+    res = client.post(
+        "/chat", json={"question": "What is the casual loading?", "award": "MA000009"}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["route"] == "rag"
+    assert body["citations"][0]["id"] == "MA000009:11.1"
+    assert body["disclaimer"] == DISCLAIMER
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"question": ""},
+        {"question": "   "},
+        {"question": "x" * 1001},
+        {"question": "q", "award": "MA999999"},
+    ],
+)
+def test_chat_endpoint_rejects_bad_input(fake_backend, payload):
+    assert client.post("/chat", json=payload).status_code == 422
+
+
+def test_chat_endpoint_returns_503_when_llm_unavailable(monkeypatch):
+    def down(conn, question, *, award=None):
+        raise LLMError("LLM request failed: HTTP 503")
+
+    monkeypatch.setattr(main, "connect", lambda: _ConnCtx())
+    monkeypatch.setattr(main, "answer_question", down)
+    res = client.post("/chat", json={"question": "What is the casual loading?"})
+    assert res.status_code == 503
+    assert "try again" in res.json()["detail"]

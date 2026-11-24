@@ -213,31 +213,35 @@ Everything is under `backend/app/`. Built so far:
 | File | What it does | Step |
 |---|---|---|
 | `config.py` | Settings (database URL, model names, LLM URL/key/timeout), read from `backend/.env` | 2 |
-| `main.py` | The web API (FastAPI). Only `/health` so far; `/chat` comes in step 10 | 2 |
+| `main.py` | The web API (FastAPI): `/health` and `POST /chat` | 2, 10 |
 | `db/schema.sql` | Creates all tables and indexes | 3 |
 | `db/conn.py`, `db/init.py` | Connect to the database; apply the schema | 3 |
 | `ingestion/fetch.py` | Downloads award pages, only from allow-listed sites, saves them with sha256 | 4 |
 | `ingestion/parse_award.py` | Turns an award page into clause chunks and validates them | 5 |
 | `embeddings.py` | Turns text into vectors with `bge-small-en-v1.5` | 6 |
 | `ingestion/ingest.py` | Parse → validate → embed → save to the database | 6 |
-| `backend/tests/` | 60 automated tests; `fixtures/` holds exact excerpts of the real pages | 2-6 |
+| `ingestion/parse_rates.py` | Reads pay-rate tables into `pay_rates` | 7 |
+| `retrieval/search.py` | Vector and hybrid (vector + keyword, RRF) search | 8 |
+| `eval/golden_set.jsonl`, `app/eval/run_eval.py` | Test questions and the evaluation script | 9 |
+| `llm.py` | Sends the prompt to the LLM (any OpenAI-compatible API); retries when busy | 10 |
+| `rag/prompts.py` | The prompt: rules, sources wrapped as data, amounts hidden, canary | 10 |
+| `rag/generate.py` | Checks the reply: JSON shape, canary, citations really retrieved | 10 |
+| `pipeline.py` | Question → search → LLM → checked answer with citations | 10 |
+| `backend/tests/` | 242 automated tests; `fixtures/` holds exact excerpts of the real pages | 2-10 |
 
 Still to come (in build order):
 
 | File | What it will do | Step |
 |---|---|---|
-| `ingestion/parse_rates.py` | Read pay-rate tables into `pay_rates` | 7 |
-| `retrieval/hybrid.py` | Vector + keyword search merged with RRF | 8 |
-| `eval/golden_set.jsonl`, `app/eval/run_eval.py` | Test questions and the evaluation script | 9 |
-| `rag/prompts.py`, `rag/generate.py` | Prompt, LLM call, JSON answer, `POST /chat` | 10 |
 | `guardrails/` | Input, context and output guardrails | 11 |
 | `retrieval/rerank.py` | Cross-encoder re-ranker | 13 |
 | `router.py`, `tools/pay_rates.py` | Route questions; pay lookups | 14 |
 | `frontend/` | React chat page with citation chips | 18 |
 
-**Where is the LLM loaded?** Nowhere, by design. The LLM runs as a separate service (a hosted
-API, or Ollama on your laptop for offline work). Our code just sends it an HTTP request at
-`LLM_BASE_URL`. Nothing before step 10 needs it.
+**Where is the LLM loaded?** Nowhere, by design. The LLM runs as a separate service: Google
+Gemini's free API (model `gemini-3.5-flash-lite`). Our code just sends it an HTTP request at
+`LLM_BASE_URL`. Any OpenAI-compatible service works (Groq, Azure OpenAI, Ollama offline);
+switching is three lines in `backend/.env`.
 
 ## 8. Technology choices and why
 
@@ -248,7 +252,7 @@ API, or Ollama on your laptop for offline work). Our code just sends it an HTTP 
 | Database | Postgres 18 + pgvector, hosted on **Neon** | Vectors, keyword search, pay rates and logs in one database; matches many job ads |
 | Embeddings | `bge-small-en-v1.5` via **fastembed (ONNX Runtime)** | Free, runs on CPU, strong quality; ONNX uses ~330 MB RAM instead of ~875 MB with torch |
 | Re-ranker | `ms-marco-MiniLM-L-6-v2` via fastembed | Small (~90 MB) but a big accuracy gain |
-| LLM | Hosted OpenAI-compatible model (Azure OpenAI); Ollama `qwen2.5:3b` offline | Fast answers (~2 s vs 20-60 s on CPU); switching is three `.env` values |
+| LLM | Google Gemini free tier (`gemini-3.5-flash-lite`) through its OpenAI-compatible API | Free with no card or time limit, answers in ~1-4 s; switching (Groq, Azure OpenAI, Ollama) is three `.env` values |
 | Parsing | BeautifulSoup4 | The award pages are HTML |
 | Tests | pytest | Standard |
 | Frontend | React + Vite + TypeScript | Standard modern web stack |
@@ -282,7 +286,7 @@ measured, then changed the platform without throwing away any of the code:
 | 7 | Pay-rate extraction | Done (1,227 adult rates; juniors/apprentices later) |
 | 8 | Retrieval: vector, then hybrid | Done (`app/retrieval/search.py`) |
 | 9 | Golden set + first evaluation | Done (vector hit@6 0.90, hybrid 0.80) |
-| 10 | Generation: prompt, JSON, `/chat` | |
+| 10 | Generation: prompt, JSON, `/chat` | Done (Gemini; five real questions answered with correct citations) |
 | 11 | Guardrails | |
 | 12 | Full evaluation | |
 | 13 | Re-ranker | |
@@ -312,29 +316,24 @@ uv run python -m app.ingestion.parse_award --all   # parse and validate them
 uv run python -m app.ingestion.parse_award --award MA000009 --show 28.2   # look at one clause
 uv run python -m app.db.init                       # create the database tables
 uv run python -m app.ingestion.ingest --all        # embed and store everything
+uv run python -m app.pipeline "Do casuals get paid more on Sundays?" --award MA000009   # ask a question
 ```
 
-The database commands need `DATABASE_URL` in `backend/.env` (see the to-do list).
+The database commands need `DATABASE_URL` in `backend/.env`; questions also need the Gemini key
+(`LLM_API_KEY`).
 
 ## 11. Your to-do list
 
 **Now:**
 
-1. **Create the Neon database** (about 5 minutes):
-   - sign up at https://neon.tech (free plan);
-   - create a project; choose an Australian or Asia-Pacific region if offered;
-   - copy the connection string (starts with `postgresql://`, ends with `?sslmode=require`);
-   - create the file `backend\.env` with one line: `DATABASE_URL=<the string>`;
-   - tell Claude it is done. Do not paste the password into the chat.
-2. **Push to GitHub**: `git push` (the last two commits are only on your laptop).
+1. **Push to GitHub**: `git push` (steps 7-10 are only on your laptop).
+2. Delete the old, unused Gemini key (the one starting `AQ.`) in AI Studio if not done yet.
 
 **Later (not needed yet):**
 
-3. Before step 10: create an Azure account and an Azure OpenAI resource (Australia East) for
-   the hosted LLM. New accounts get free credit; an evaluation run costs cents.
-4. Step 17: a free Langfuse account for monitoring.
-5. Step 21: Azure resources for deployment.
-6. Optional: `ollama rm qwen2.5:3b` frees 1.8 GB on C: if you won't use the offline LLM.
+3. Step 17: a free Langfuse account for monitoring.
+4. Step 21: Azure for deployment. Start the Azure free trial only then (its $200 credit lasts
+   30 days), or use Azure for Students if eligible. Set a budget alert.
 
 ## 12. Interview talking points
 
@@ -352,6 +351,11 @@ The database commands need `DATABASE_URL` in `backend/.env` (see the to-do list)
 - **"Security?"** OWASP LLM Top 10: injection patterns + a classifier, PII redaction, a
   domain allow-list for sources, sources wrapped as data, a canary token to detect prompt
   leaks, output validation, rate limiting.
+- **"A bug you caught?"** The first real answer said casuals get 150% on Sundays; the award
+  says 175%. Rate tables lose their columns as text, so the model paired the headers with
+  the wrong percentages. Fix: rate tables are labelled in the prompt and the model may not
+  read figures off them; exact rates come from the pay-rate tool, which reads the real grid.
+  Found by checking the answer against the clause, which is why every answer cites one.
 - **"Constraints?"** A 7 GB laptop forced measured trade-offs: ONNX instead of torch
   (same vectors, a third of the memory), hosted Postgres instead of local Docker.
 

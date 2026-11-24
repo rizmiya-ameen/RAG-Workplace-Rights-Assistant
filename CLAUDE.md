@@ -27,15 +27,19 @@ all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -
 - **Stack**: Python 3.12 (`uv`), FastAPI, hosted Postgres 18 + pgvector (Neon; same in dev and
   the deployed demo), `BAAI/bge-small-en-v1.5` embeddings (384 dims) and
   `ms-marco-MiniLM-L-6-v2` re-ranker via **fastembed (ONNX Runtime, no torch)**,
-  OpenAI-compatible LLM client, BeautifulSoup4, pytest, React + Vite + TypeScript, Langfuse,
+  OpenAI-compatible LLM client (plain httpx, `app/llm.py`), BeautifulSoup4, pytest, React + Vite + TypeScript, Langfuse,
   GitHub Actions, Azure.
 - **No Docker on the dev laptop.** The app runs natively with `uv`. The `Dockerfile` is built
   only in GitHub Actions/Azure; CI tests use a Postgres service container on GitHub.
   `docker-compose.yml` is an optional local Postgres for anyone who has Docker.
-- **LLM** (from build step 10): a hosted OpenAI-compatible model (Azure OpenAI, Australia East)
-  for development, README eval numbers and the deployed app. Ollama was uninstalled
-  (2026-11-23) to free C:; it can be reinstalled as an offline option
-  (`LLM_BASE_URL=http://127.0.0.1:11434/v1`). Switching = three `.env` values.
+- **LLM** (from build step 10): **Google Gemini free tier** (AI Studio key, no card, no
+  expiry) via its OpenAI-compatible endpoint, model `gemini-3.5-flash-lite`, for development,
+  eval numbers and the demo. `gemini-2.5-*` is closed to new users; `gemini-3.8-flash` was
+  often 503 (busy) on the free tier. Flash-Lite rejects `reasoning_effort=none`; `low` works
+  (default thinking ate the token budget and cut answers off). GitHub Models was retired
+  2026-07-30, so it is not an option. Azure OpenAI is not used (trial credit lasts 30 days).
+  Ollama was uninstalled (2026-11-23); it can be reinstalled as an offline option.
+  Switching = three `.env` values (see `.env.example`).
 - **Machine limits**: ~7 GB RAM, no GPU (Ryzen 5 3500U); C: drive was full, so keep caches on
   E: (`UV_CACHE_DIR=E:\dev-cache\uv`, `HF_HOME=E:\dev-cache\huggingface` user env vars; ONNX
   models in repo `.cache/models`). Keep memory low: small models, lazy loading, small batches.
@@ -110,6 +114,9 @@ DB tests (`test_schema.py`, `test_ingest.py`) roll back their rows and use `TEST
 
 `uv run python -m app.eval.run_eval --mode retrieval` (vector vs hybrid; `--no-save` to skip
 writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
+
+`uv run python -m app.pipeline "question" --award MA000009` asks one question end to end
+(same path as `POST /chat`). Needs `LLM_API_KEY` in `backend/.env`; never print it.
 
 ## Rules
 
@@ -194,8 +201,27 @@ writing results). Later: `--mode all` (answers, faithfulness, routes, red-team).
   Hybrid loses on ordering, not recall: keep both modes, decide after the re-ranker.
   Top-1 cosine distance: answerable mean 0.255 vs decline 0.327 (overlapping; gate needs the
   re-ranker score too). README created with the eval table. 204 tests pass.
-- Next: step 10 (generation: prompt, JSON output, canary, POST /chat) — needs the Azure
-  OpenAI endpoint, key and deployment name in `backend/.env`.
-- Decisions: LLM = hosted (Azure OpenAI) from step 10 (Ollama uninstalled; optional offline). DB = Neon
+- Step 10 (generation): done, on Gemini `gemini-3.5-flash-lite`. `app/llm.py` (httpx POST,
+  temperature 0, JSON mode, `reasoning_effort`, retries on 429/5xx/timeout with backoff and
+  capped Retry-After; errors never contain the key). `app/rag/prompts.py`: sources in
+  `<source id=... award=... heading=... [type="rate-table"]>`, HTML-escaped (a clause or
+  question cannot close/open tags); `$` amounts masked as `[amount]` everywhere and bare
+  amounts in rate tables (clause numbers like 16.10 kept); per-request canary in the system
+  prompt. `app/rag/generate.py`: canary leak -> blocked, invalid JSON -> fallback, citations
+  not retrieved dropped (base clause maps to its `#n` part), no valid citation -> fallback.
+  `app/pipeline.py` `answer_question()` -> routes rag / clarify / insufficient_context /
+  fallback; insufficient and fallback use fixed text; disclaimer added by code; checks that
+  fire go to `guardrail_events` (no user text; caller commits). `POST /chat` (question 1-1000
+  chars, award enum; 503 if the LLM is down). Retrieval for chat: vector, k=6.
+  Found: rate-table chunks lose their columns ("Saturday Sunday" over "150% 175%"), and the
+  model said casual Sunday = 150% (B.2.3 says 175%). Rate tables are tagged and the prompt
+  forbids reading figures off them; exact rates come from the pay tool (step 14). Possible
+  later improvement: join table cells with " | " in parse_award (needs re-ingest + golden
+  check). Five real questions (sunday, hosp-01, retail-01, ff-01, clerks-01, plus a retail
+  roster question over HTTP) gave cited answers verified against the clauses; the visa
+  question declined. ~1.5-4 s per answer (11 s on a cold start). 242 tests pass.
+- Next: step 11 (guardrails: input guard, context guard, full output guard, red-team set).
+- Decisions: LLM = Gemini free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional
+  offline. DB = Neon
   Postgres + pgvector. Embeddings/re-ranker = fastembed (ONNX). Pay data = award rate tables
   parsed into `pay_rates`. Frontend = React + Vite + TypeScript. Deploy = Azure.

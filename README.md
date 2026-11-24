@@ -8,8 +8,8 @@ and cites the exact clause every time (for example `MA000009:28.2`).
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–9 of 22 are done. Retrieval and evaluation work; answer
-> generation, guardrails and the web UI come next.
+> Work in progress: build steps 1–10 of 22 are done. Retrieval, evaluation and cited answers
+> (`POST /chat`) work; guardrails, the re-ranker, the pay-rate tool and the web UI come next.
 
 ## How it works
 
@@ -27,6 +27,29 @@ all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -
   (1,227 adult rates), cross-checked against each other. The LLM never reads pay amounts from
   text.
 - **Storage:** Postgres 18 + pgvector on Neon (HNSW for vectors, GIN for full text).
+- **Generation:** any OpenAI-compatible model; the demo uses Google Gemini
+  (`gemini-3.5-flash-lite`, free tier). Sources are wrapped in `<source id=…>` tags as data,
+  dollar amounts are masked before the model sees them, and the reply must be JSON whose
+  citations were actually retrieved. A per-request canary detects prompt leaks. The
+  disclaimer is added by code, not the model.
+
+Example (`POST /chat`, General Retail):
+
+> **Q:** How much notice does an employer have to give for a roster change?
+>
+> **A:** For permanent roster changes, employers must give employees other than part-time
+> employees at least 7 days' written notice, which extends to 14 days if the employee
+> disagrees (MA000004:15.9#1). For part-time employees, the employer can change the regular
+> pattern of work by giving 7 days' written notice, or 48 hours in an emergency
+> (MA000004:10.10).
+
+### A bug the citations caught
+
+The first real answer said casual hospitality workers get 150% on Sundays. The cited clause
+(MA000009 B.2.3) says 175%. Rate tables lose their column layout when stored as text, so the
+model matched the "Saturday Sunday" headers to the wrong percentages. Rate tables are now
+labelled in the prompt and the model may not read figures off them; exact rates come from the
+structured pay-rate tool, which reads the real table grid.
 
 ## Evaluation
 
@@ -56,10 +79,12 @@ Requires Python 3.12 with [uv](https://docs.astral.sh/uv/) and a Postgres 18 dat
 pgvector (the project uses Neon).
 
 ```bash
-cp .env.example backend/.env          # then set DATABASE_URL
+cp .env.example backend/.env          # then set DATABASE_URL and LLM_API_KEY
 cd backend
 uv run python -m app.db.init          # create tables
 uv run python -m app.ingestion.ingest --all
 uv run python -m app.retrieval.search "Do casuals get more on Sundays?" --award MA000009
+uv run python -m app.pipeline "Can an office worker ask to work from home?"   # needs LLM_API_KEY
+uv run uvicorn app.main:app                                                 # /docs, POST /chat
 uv run pytest -q
 ```

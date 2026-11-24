@@ -10,12 +10,12 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "beautifulsoup4>=4.12",
     "fastembed>=0.5",  # ONNX Runtime: bge embeddings + MiniLM re-ranker without torch
+    "httpx>=0.28",  # OpenAI-compatible LLM endpoint (app/llm.py)
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "httpx>=0.28",
     "ruff>=0.8",
 ]
 
