@@ -214,3 +214,17 @@ def test_suggest_gate_keeps_every_found_answer():
     assert gate["threshold"] == -3.0
     assert gate["answerable_gated"] == 1 and gate["decline_gated"] == 1
     assert suggest_gate([{"answerable": True, "rank": 1, "top_rerank": None}]) is None
+
+
+def test_route_rows_judge_the_router_not_the_final_route():
+    # regression (step 15 eval): the LLM asking a clarifying question on a rag row was
+    # counted as a router misroute
+    from app.eval.answers import route_failures
+
+    row = {"expected_route": "rag"}
+    clarified = ChatResponse(
+        answer="Which award?", citations=[], route="clarify", guardrails=[],
+        request_id="r", latency_ms=1.0,
+    )  # fmt: skip
+    assert route_failures(row, clarified, "rag") == []
+    assert route_failures(row, clarified, "clarify") == ["router chose clarify"]

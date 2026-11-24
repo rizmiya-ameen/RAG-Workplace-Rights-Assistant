@@ -170,3 +170,24 @@ def test_pii_at_end_of_sentence_is_redacted():
 )
 def test_worksafe_questions_are_in_scope(question):
     assert check_input(question).route == "pass"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Do casuals get more on Sundays?",  # was out_of_scope before step 17
+        "Are chefs paid extra on Saturdays?",
+        "Do baristas get penalty rates at night?",
+        "What about weekends at cafes?",
+    ],
+)
+def test_plural_workplace_words_are_in_scope(question):
+    assert check_input(question).route == "pass"
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["What is the capital of France?", "Who won the cricket?", "Tell me some jokes"],
+)
+def test_plural_s_keeps_unrelated_questions_out_of_scope(question):
+    assert check_input(question).route == "out_of_scope"

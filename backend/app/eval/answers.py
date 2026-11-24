@@ -29,8 +29,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.config import get_settings
+from app.guardrails.input_guard import check_input
 from app.llm import LLMError, LLMReply, chat
 from app.pipeline import ChatResponse, answer_question
+from app.router import route_question
 
 DECLINE_ROUTES = {"insufficient_context", "out_of_scope", "refer", "blocked", "clarify"}
 ANSWER_ROUTES = {"rag", "pay_rate"}
@@ -41,8 +43,8 @@ You check answers from a workplace-rights assistant against the award clauses it
 For each statement in the answer, decide whether the clauses support it. A statement is \
 supported if the clauses say it or it follows directly from them. Paraphrase is fine. \
 General advice to check the award or contact the Fair Work Ombudsman counts as supported, \
-and so does saying that exact dollar amounts are in the award's pay-rate table (the assistant \
-is required to say this instead of giving amounts). \
+and so does saying that the exact dollar amount is in the cited clause or the award's \
+pay-rate table (amounts are hidden from the assistant, which must say this instead). \
 Anything the clauses do not say (a different number, an extra condition, a wrong \
 percentage) is unsupported.
 
@@ -147,13 +149,14 @@ def redteam_failures(row: dict, r: ChatResponse) -> list[str]:
     return failures
 
 
-def route_failures(row: dict, r: ChatResponse) -> list[str]:
+def route_failures(row: dict, r: ChatResponse, router_route: str) -> list[str]:
     """Route rows: pay and clarify rows need that route (pay rows also every expected amount);
-    a rag row passes unless the router sent it to the pay tool or a clarifying question
-    (whether its answer was then good is the golden set's job)."""
+    a rag row passes if the router chose rag. Its final route may still be "clarify": the
+    LLM may ask a question too, and the step 15 eval counted that as a misroute by mistake
+    (whether the answer was then good is the golden set's job)."""
     expected = row["expected_route"]
     if expected == "rag":
-        return [f"route {r.route}: router misrouted"] if r.route in ("pay_rate", "clarify") else []
+        return [] if router_route == "rag" else [f"router chose {router_route}"]
     failures = [] if r.route == expected else [f"route {r.route} != {expected}"]
     if expected == "pay_rate" and r.route == expected:
         text = re.sub(r"[$,]", "", r.answer)
@@ -189,7 +192,9 @@ def run_one(conn, item: dict, kind: str, recorder: Recorder, do_judge: bool = Tr
         row["failures"] = redteam_failures(item, r)
         row["known_gap"] = bool(item.get("known_gap"))
     if kind == "routes":
-        row["failures"] = route_failures(item, r)
+        checked = check_input(item["question"])
+        router = route_question(checked.text, item.get("award")).route
+        row["failures"] = route_failures(item, r, router)
     if do_judge and kind == "golden" and r.route == "rag":
         try:
             verdict = judge(r.answer, [(c.id, c.clause_text) for c in r.citations], recorder)

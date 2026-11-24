@@ -170,6 +170,9 @@ def test_chat_endpoint_returns_cited_answer(fake_backend):
     assert body["route"] == "rag"
     assert body["citations"][0]["id"] == "MA000009:11.1"
     assert body["disclaimer"] == DISCLAIMER
+    # one id for the response, the Langfuse trace and guardrail_events (step 17)
+    assert res.headers["X-Request-ID"] == body["request_id"]
+    assert len(body["request_id"]) == 32
 
 
 @pytest.mark.parametrize(

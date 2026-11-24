@@ -224,7 +224,10 @@ _SCOPE = re.compile(
     r"conditions|disconnect|after hours|training|unpaid|underpa\w*|owed?|allowed|legal|"
     # WorkSafe Victoria guidance (step 15)
     r"safe\w*|unsafe|ohs|hsrs?|health and safety|hazard\w*|injur\w*|accident\w*|incident\w*|"
-    r"worksafe|workcover|compensation|bully\w*|harass\w*|aggression|violence|heat|stress)\b",
+    r"worksafe|workcover|compensation|bully\w*|harass\w*|aggression|violence|heat|stress)"
+    # plurals ("casuals", "Sundays", "chefs"): "Do casuals get more on Sundays?" was
+    # out_of_scope (step 17)
+    r"s?\b",
     _I,
 )
 

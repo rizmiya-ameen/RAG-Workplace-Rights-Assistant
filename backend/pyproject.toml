@@ -11,6 +11,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "fastembed>=0.5",  # ONNX Runtime: bge embeddings + MiniLM re-ranker without torch
     "httpx>=0.28",  # OpenAI-compatible LLM endpoint (app/llm.py)
+    "langfuse>=5.2.0",
 ]
 
 [dependency-groups]
@@ -29,3 +30,7 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# pytest fixtures imported from another test module look like redefinitions
+"tests/*" = ["F811"]

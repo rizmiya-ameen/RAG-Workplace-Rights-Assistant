@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     injection_classifier: bool = True
     injection_threshold: float = 0.5
 
+    # Langfuse tracing (step 17). Empty keys = tracing off (no-op). Cloud regions:
+    # https://cloud.langfuse.com (EU) or https://us.cloud.langfuse.com (US).
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
     # Retrieval for /chat: "vector" won the step 9 eval (hit@6 0.90 vs 0.80 hybrid).
     retrieval_mode: str = "vector"
     retrieval_k: int = 6

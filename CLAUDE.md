@@ -51,7 +51,7 @@ all answers -> output guard (canary, citation check, $ check, PII, disclaimer) -
   (`WSV:what-do-when-youve-been-injured-work:first-steps`; not `#<heading>`: "#n" marks split
   parts, and citation matching splits on "#").
 - **Guardrails** (`backend/app/guardrails/`): input (length, PII redaction, injection patterns +
-  Prompt Guard classifier, evasion patterns, advice -> refer, scope), context (domain allow-list,
+  injection classifier (ProtectAI DeBERTa v2, step 16), evasion patterns, advice -> refer, scope), context (domain allow-list,
   tag stripping, sources wrapped as data), output (canary, citation validation, dollar amounts
   only if they match the pay tool, PII, disclaimer added by code).
 - **Eval** (`eval/`): golden set with expected clauses + verbatim evidence quotes (checked by a
@@ -132,6 +132,16 @@ golden, no LLM). `uv run python -m app.tools.pay_rates MA000009 --level 2 --type
 
 `uv run python -m app.pipeline "question" --award MA000009` asks one question end to end
 (same path as `POST /chat`). Needs `LLM_API_KEY` in `backend/.env`; never print it.
+
+Langfuse tracing (step 17) is off until `backend/.env` has `LANGFUSE_PUBLIC_KEY`
+(`pk-lf-...`), `LANGFUSE_SECRET_KEY` (`sk-lf-...`) and `LANGFUSE_HOST`
+(`https://cloud.langfuse.com` EU, or `https://us.cloud.langfuse.com` US: must match the
+region the project was created in). Keys come from cloud.langfuse.com -> project ->
+Settings -> API Keys -> Create new API keys (free Hobby plan). The user adds them; never
+ask for them in chat or print them.
+`uv run python -m app.observability check` (keys valid?),
+`uv run python -m app.observability stats --days 7` (guardrail decisions per rule).
+The pipeline CLI prints the `request_id` = Langfuse trace id (search it in Tracing).
 
 ## Rules
 
@@ -349,8 +359,15 @@ golden, no LLM). `uv run python -m app.tools.pay_rates MA000009 --level 2 --type
   s117, Part 2-3 heading), `WSV_injured_excerpt.html` (<main> through "Reviewed on"),
   byte-exact slices. Fixed 2 flaky DB search tests (tied distances come back in varying
   order; assert rank 1 only). 648 tests pass.
-  TODO when the Gemini quota resets: a fresh full `--mode answers` run (~170 calls now) for
-  the "+ router" and "+ NES/WorkSafe" README rows.
+  Full answer evals (2026-11-24): first run (step 15 code) faithfulness 0.94: prompt bugs
+  (step 15 line "NES is a minimum; award can add" repeated unsourced; rule 4 "amount comes
+  from the pay-rate table" -> "amount not stated" for allowances) and an eval bug
+  (route_failures counted the LLM's clarify as a router misroute; now uses the router's
+  decision). Re-run on step 16 code: answer rate 0.90 (69/77), cited 1.00, faithfulness
+  0.99 (67/68; hosp-07 lists s333M(3) factors from outside knowledge), decline 1.00,
+  red-team 0.97 (60/62 = the 2 classifier FPs), routes 29/29, 18 pay answers with amounts,
+  p50 4.2 s / p95 9.9 s (rag p50 5.3 s: CPU re-ranker over 32 clauses), 197 calls, 301k
+  tokens. 6 LLM clarifies on answerable (was 1): general NES questions ask "which award".
 - Step 16 (injection classifier): done, with `protectai/deberta-v3-base-prompt-injection-v2`
   (Apache-2.0) instead of Prompt Guard 2 (user's choice 2026-11-24: Meta's model is gated, no
   official ONNX; only third-party conversions). `app/guardrails/classifier.py`: ONNX export
@@ -371,7 +388,33 @@ golden, no LLM). `uv run python -m app.tools.pay_rates MA000009 --level 2 --type
   (real classifier): 62 rows, route accuracy 0.97, attacks caught 1.00 (7/7 classifier-only),
   false positives 2/24, golden blocked 0/77, ~0.1 s per question. No threshold separates the
   2 false positives (0.994/0.999) from attacks (0.975-1.0).
-- Next: step 17 (observability: Langfuse).
+- Step 17 (observability): done, verified "one
+  request visible end to end". `app/observability.py`: Langfuse SDK 5.2 (`uv add langfuse`,
+  OTel-based), no-op without LANGFUSE_PUBLIC_KEY/SECRET_KEY (`client()` lru_cache -> None).
+  `trace(request_id)` = root "chain" observation with `trace_context={"trace_id":
+  request_id}` (uuid4 hex = Langfuse trace id = /chat request_id = guardrail_events
+  request_id; /chat also returns header X-Request-ID). `step(name, as_type)` nested
+  observations; `traced_chat()` wraps the LLM call as a generation (model, input/output
+  tokens, latency, attempts). Pipeline split into `answer_question()` (trace + log line
+  "chat request_id=... route=... latency_ms=...") and `_answer()`: input_guard (guardrail),
+  router, pay_tool (tool) + llm_phrase_pay, or retrieval (retriever: ids, distances, rerank
+  scores) -> context_guard -> relevance_gate (guardrails) -> llm (generation) ->
+  output_guard (guardrail). Trace input = guarded question (never raw); `mask()` hook also
+  redacts PII and CANARY-... in everything sent. `python -m app.observability check` (keys)
+  and `stats --days 7` (guardrail_events per stage/rule, events + distinct requests). API
+  flushes on shutdown (lifespan), CLI after its question. ruff: tests/* ignore F811
+  (imported fixtures). tests/test_observability.py uses a fake Langfuse client. 683 tests pass.
+  Verified 2026-11-24 (EU cloud.langfuse.com, keys in backend/.env): `check` OK; "Do casuals
+  get more on Sundays?" -> trace 5b2d4119... with 8 observations (chain chat, guardrail
+  input_guard, router, retriever retrieval, guardrails context_guard + relevance_gate,
+  generation llm with model + tokens 3255/184, guardrail output_guard), canary masked.
+  Read back with `client().api.observations.get_many(trace_id=...)` (SDK 5.2 has no
+  trace.get). Cold CLI start 34 s: classifier load 15 s, embed + re-ranker 11 s, LLM 8 s.
+  Bug found by the first real question: it was out_of_scope (scope regex had "casual",
+  "sunday", no plurals); `_SCOPE` words take an optional plural "s"; tests + red-team fp-22 (63 rows,
+  redteam-input still 0.97, the same 2 classifier FPs). tests/conftest.py forces the
+  LANGFUSE_* keys empty so tests never send traces. 691 tests pass.
+- Next: step 18 (frontend, see plan).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon

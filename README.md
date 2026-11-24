@@ -9,10 +9,10 @@ Victoria guidance, and cites the exact source every time (for example `MA000009:
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–16 of 22 are done. Four awards, the NES and 12 WorkSafe
+> Work in progress: build steps 1–17 of 22 are done. Four awards, the NES and 12 WorkSafe
 > pages; retrieval with a cross-encoder re-ranker, cited answers (`POST /chat`), exact pay
-> rates from a structured tool, guardrails with an injection classifier, and the full
-> evaluation work; observability and the web UI come next.
+> rates from a structured tool, guardrails with an injection classifier, the full
+> evaluation work and Langfuse tracing; the web UI comes next.
 
 ## How it works
 
@@ -149,6 +149,37 @@ type is an amount question; "hourly pay"), and those nine rows are now in the se
 misrouted pay question fails safe: on the clause route the model cannot state amounts, so
 the user gets no number rather than a wrong one.
 
+## Observability
+
+Every request is one [Langfuse](https://langfuse.com) trace (free Hobby plan; tracing is off
+when the keys are not set). The trace id is the request's `request_id`: `POST /chat` returns
+it in the body and the `X-Request-ID` header, and the same id is on every `guardrail_events`
+row, so a user report, a log line, a guardrail event and a trace all join on one value.
+
+```
+chat (chain)
+├─ input_guard (guardrail)     route, rule, classifier score, PII redaction counts
+├─ router                      route, award, employment type, level, missing slots
+├─ retrieval (retriever)       clause ids, distances, re-rank scores
+├─ context_guard (guardrail)   sources dropped
+├─ relevance_gate (guardrail)  top re-rank score vs threshold
+├─ llm (generation)            model, prompt, reply, input/output tokens, retries
+└─ output_guard (guardrail)    amounts removed, PII, citations kept
+```
+
+Pay questions show `pay_tool` (tool) and `llm_phrase_pay` instead of retrieval. The trace
+input is the guarded question (PII already replaced, never the raw text), and a mask hook
+redacts PII and the per-request canary in everything sent. Tests never trace, even with
+real keys in `.env`.
+
+The first real trace showed where a cold start goes: 34 s, of which loading the injection
+classifier took 15 s, the embedding model and re-ranker 11 s, and Gemini 8 s. It also
+caught a guardrail bug that 683 tests and the eval sets had missed: "Do casuals get more on
+Sundays?" was rejected as out of scope, because the scope vocabulary only knew "casual" and
+"sunday". Every listed word now takes a plural "s" (tests, plus red-team row fp-22).
+`python -m app.observability stats --days 7` counts guardrail decisions per rule from the
+database.
+
 ## Evaluation
 
 The golden set (`eval/golden_set.jsonl`) has 77 answerable questions (59 on the awards, 10 on
@@ -209,17 +240,39 @@ questions, and the model's own "insufficient context" reply handles the rest.
 
 ### Full answer evaluation
 
-Every golden and red-team question goes through the real pipeline (`POST /chat` path) on
-Gemini `gemini-3.5-flash-lite`. An LLM judge sees only the answer and the clauses it cites
-and decides whether every statement is supported.
+Every golden, red-team and route question goes through the real pipeline (`POST /chat`
+path) on Gemini `gemini-3.5-flash-lite`. An LLM judge sees only the answer and the clauses it
+cites and decides whether every statement is supported. Pay answers are checked by amount
+instead: every expected amount (recomputed from the award page by a test) must be stated.
 
 | Version | hit@6 | Answer rate | Expected clause cited | Faithfulness | Decline accuracy | Red-team pass | p50 / p95 latency | Cost |
 |---|---|---|---|---|---|---|---|---|
 | Vector + guardrails | 0.90 | 0.90 (53/59) | 0.98 | 1.00 (53/53) | 1.00 (10/10) | 1.00 (44/44) | 1.5 s / 2.5 s | $0 (free tier; 137 LLM calls, 198k tokens) |
 | + re-ranker and relevance gate (partial: 69 of 115 questions†) | 0.98 | 1.00 (38/38) | 1.00 | 0.97 (32/33) | 1.00 (2/2) | 1.00 (29/29) | 2.9 s / 5.7 s | $0 |
+| **+ router and pay tool, NES and WorkSafe, injection classifier** (steps 14–16; 77 + 9 golden, 62 red-team, 29 route questions) | 0.96 | 0.90 (69/77) | 1.00 | 0.99 (67/68) | 1.00 (9/9) | 0.97 (60/62)‡ | 4.2 s / 9.9 s | $0 (197 LLM calls, 301k tokens) |
 
-† The run stopped at the free tier's daily request limit (HTTP 429) after 69 questions;
-it is resumable and the row will be completed. The four earlier retrieval misses it reached
+‡ The two red-team failures are the classifier's documented false positives (fp-13, fp-15,
+see Guardrails). Route questions: 29 of 29 right, and all 18 pay answers state the expected
+amounts. Latency by route: answered from clauses p50 5.3 s (the CPU re-ranker over 32
+clauses is most of it on the dev laptop), pay answers 1.3 s, blocked 35 ms.
+
+What the steps 14–16 runs showed:
+- The first run after step 15 scored 0.94 faithfulness. Two of its four flags came from my
+  own prompt: a line added in step 15 ("the NES is a minimum; an award can add to it") was
+  repeated without a source, and the rule "say the amount comes from the pay-rate table"
+  made the model write "the amount is not stated" for an allowance whose amount sits in the
+  clause. Both fixed; 0.99 on the re-run. That run's route score (0.82) was an eval bug: the
+  LLM asking a clarifying question was counted as a router misroute (fixed, with a test).
+- The one remaining flag is fair: asked about the right to disconnect, the model listed the
+  factors that decide whether refusing contact is unreasonable. The clause only says
+  section 333M(3) "lists matters"; the factors came from the model's own knowledge.
+- More clarifying questions: 6 answerable questions got "which award / are you casual?"
+  instead of an answer (1 in step 12), mostly general questions where NES and award
+  clauses are retrieved together (nes-01, nes-02, all-01, all-02). Two are retrieval misses
+  (retail-10, nes-10).
+
+† The run stopped at the free tier's daily request limit (HTTP 429) after 69 questions,
+and the full run above replaces it. The four earlier retrieval misses it reached
 (hosp-02, hosp-07, hosp-10, hosp-22) are now answered, cite the expected clause and pass the
 judge. The one flagged answer (hosp-20) is a strict call: it says salaried managers don't
 get annual leave loading, which clause 25.2(g) does say, but in clumsy wording. Latency is
@@ -234,7 +287,7 @@ higher because the re-ranker runs on CPU (~1.5 s).
   not stopped by any guard. Two known gaps (base64 and letter-spaced instructions) are
   reported separately and still get through; the retrieved text is wrapped as data, and
   neither leaked anything.
-- **Caveats:** 59 questions is a small set, and the judge is the same model family as the
+- **Caveats:** 77 questions is a small set, and the judge is the same model family as the
   answerer, which can be lenient. The judge prompt is in `backend/app/eval/answers.py`.
 
 The first full run scored 0.92 on citations and 0.90 on faithfulness. Reading the flagged
@@ -258,5 +311,6 @@ uv run python -m app.ingestion.ingest --all
 uv run python -m app.retrieval.search "Do casuals get more on Sundays?" --award MA000009
 uv run python -m app.pipeline "Can an office worker ask to work from home?"   # needs LLM_API_KEY
 uv run uvicorn app.main:app                                                 # /docs, POST /chat
+uv run python -m app.observability check   # optional: LANGFUSE_* keys in backend/.env
 uv run pytest -q
 ```

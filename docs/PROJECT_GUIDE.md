@@ -298,7 +298,7 @@ measured, then changed the platform without throwing away any of the code:
 | 14 | Router, pay tool, clarify route | Done (route accuracy 1.00 on 29 rows; pay amounts from SQL, LLM only phrases) |
 | 15 | NES and WorkSafe ingestion | Done (NES 109 sections, 12 WorkSafe pages; 77 golden questions, hit@6 0.96) |
 | 16 | Prompt Guard classifier | Done, with ProtectAI DeBERTa v2 (ONNX): catches 7 attacks the regex misses; 2 of 24 look-alikes blocked |
-| 17 | Observability (Langfuse) | |
+| 17 | Observability (Langfuse) | Done (one trace per request, 8 typed steps; request_id joins trace, response and guardrail events) |
 | 18 | Frontend | |
 | 19 | Hardening (rate limits, timeouts) | |
 | 20 | CI on GitHub Actions | |
