@@ -1,0 +1,138 @@
+# CI (build step 20): lint + tests for the API and the web UI, a retrieval-quality gate on
+# a fresh Postgres + pgvector, and a Docker build of the API. No secrets and no LLM calls:
+# the answer eval stays a manual run (Gemini free-tier quota).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: API (ruff, pytest, retrieval eval)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18 # same major version as Neon (Postgres 18)
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rights
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Throwaway CI database in the service container; not a secret.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rights
+      INJECTION_CLASSIFIER: "false" # 740 MB model; its tests skip without the files
+      UV_FROZEN: "1"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.8"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install
+        run: uv sync
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      # bge-small (embeddings) and the MiniLM cross-encoder, ~220 MB from Hugging Face.
+      - name: Cache ONNX models
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/models/models--*
+            .cache/models/blobs
+          key: onnx-${{ hashFiles('backend/app/config.py') }}
+
+      # Fails if Postgres is unreachable, so the DB tests below can't skip silently.
+      - name: Schema
+        run: uv run python -m app.db.init
+
+      - name: Tests
+        run: uv run pytest -q -rs # -rs lists every skipped test and why
+
+      # Raw pages are committed in data/raw, so CI rebuilds the index from the same sources.
+      - name: Ingest awards, NES and WorkSafe
+        run: |
+          uv run python -m app.ingestion.ingest --all
+          uv run python -m app.ingestion.ingest --nes
+          uv run python -m app.ingestion.ingest --worksafe
+
+      # Fails the build if the /chat retrieval (vector + re-ranker) drops below hit@6 0.94
+      # on the golden set (0.96 at step 15: 74 of 77; the gate allows one more miss).
+      - name: Retrieval eval (gate)
+        run: |
+          uv run python -m app.eval.run_eval --mode retrieval --search-modes vector+rerank \
+            --min-hit 0.94 --no-save | tee retrieval.txt
+          { echo '### Retrieval eval (golden set)'; echo; cat retrieval.txt; } >> "$GITHUB_STEP_SUMMARY"
+
+  frontend:
+    name: Web UI (typecheck, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  docker:
+    name: API image (docker build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+          load: true
+          tags: workplace-rights-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (/health)
+        run: |
+          docker run -d --name api -p 8000:8000 workplace-rights-api:ci
+          for i in $(seq 1 30); do
+            curl -fs http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+          docker logs api
+          exit 1
+      - name: Image size
+        run: docker image ls workplace-rights-api:ci --format '{{.Size}}' | tee -a "$GITHUB_STEP_SUMMARY"

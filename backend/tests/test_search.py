@@ -1,17 +1,19 @@
 """Retrieval tests. DB tests store fixture chunks under TEST-* source ids with one-hot
 embeddings (chunk i points along axis i), so vector ranking is predictable, and roll back."""
 
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
 import psycopg
 import pytest
 
-from app.db.conn import apply_schema, connect
+from app.db.conn import SCHEMA_PATH, apply_schema, connect
 from app.embeddings import DIMS
 from app.ingestion.ingest import ingest_document
 from app.ingestion.parse_award import parse_award_html
-from app.retrieval.search import CANDIDATES, GENERAL_CANDIDATES, RRF_K, rrf, search
+from app.retrieval import search as search_module
+from app.retrieval.search import CANDIDATES, GENERAL_CANDIDATES, RRF_K, _text, rrf, search
 
 FIXTURE = Path(__file__).parent / "fixtures" / "MA000002_excerpt.html"
 AWARD = "TEST-SEARCH"
@@ -56,7 +58,14 @@ def schema_ready():
 
 @pytest.fixture
 def conn(schema_ready):
+    """An empty copy of the schema inside the test's transaction (rolled back after), so a
+    test sees only its own rows. Before step 20 these tests ran next to the real ~1,400
+    chunks; that hid a bug CI's empty database found (see MIN_DF_CHUNKS in search.py)."""
     with connect() as c:
+        schema = f"test_search_{uuid.uuid4().hex[:8]}"
+        c.execute(f"CREATE SCHEMA {schema}")
+        c.execute(f"SET LOCAL search_path TO {schema}, public")  # pgvector stays in public
+        c.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
         yield c
         c.rollback()
 
@@ -117,6 +126,21 @@ def test_hybrid_adds_full_text_matches(conn, doc):
     hybrid = search(conn, "right to disconnect", mode="hybrid", k=3, **kw)
     assert not vector[0].clause_ref.startswith("13A")
     assert any(h.clause_ref.startswith("13A") for h in hybrid)
+
+
+def test_full_text_works_on_a_small_corpus(conn, doc):
+    """Regression (step 20, found by CI's empty database): with only these 20 chunks,
+    "disconnect" is in 40% of them, over MAX_DF, so every word was dropped and full text
+    returned nothing. The hybrid test above still passed locally because vector ties put
+    13A in its top 3 by luck. Below MIN_DF_CHUNKS chunks the common-word filter is off."""
+    rows = _text(conn, "right to disconnect", AWARD, 24, general=False)
+    refs = [r[2] for r in rows]
+    assert refs and all(r.startswith("13A") for r in refs[:4])
+
+
+def test_full_text_drops_common_words_on_a_large_corpus(conn, doc, monkeypatch):
+    monkeypatch.setattr(search_module, "MIN_DF_CHUNKS", 10)  # 20 chunks counts as large here
+    assert _text(conn, "right to disconnect", AWARD, 24, general=False) == []
 
 
 def test_unknown_mode_is_refused(conn):

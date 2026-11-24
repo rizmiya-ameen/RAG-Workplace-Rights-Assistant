@@ -106,6 +106,7 @@ class Citation(BaseModel):
     title: str
     url: str
     clause_text: str
+    heading: str = ""  # clause / section heading, shown above the text in the web UI
 
 
 class ChatResponse(BaseModel):
@@ -161,12 +162,16 @@ def answer_question(
             },
             metadata={"latency_ms": response.latency_ms},
         )
+    # Structured fields only (app/logs.py); never the question or the answer.
     log.info(
-        "chat request_id=%s route=%s latency_ms=%.0f guardrails=%s",
-        request_id,
-        response.route,
-        response.latency_ms,
-        ",".join(response.guardrails) or "-",
+        "chat",
+        extra={
+            "request_id": request_id,
+            "route": response.route,
+            "latency_ms": round(response.latency_ms),
+            "guardrails": response.guardrails,
+            "citations": len(response.citations),
+        },
     )
     return response
 
@@ -187,6 +192,7 @@ def _answer(conn, question, award, search_fn, chat_fn, request_id, root) -> Chat
                     title=docs.get(h.source_id, ("", ""))[0],
                     url=docs.get(h.source_id, ("", ""))[1],
                     clause_text=h.content,
+                    heading=h.heading or "",
                 )
                 for h in cited
             ],

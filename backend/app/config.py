@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     llm_api_key: str = ""
     llm_model: str = "gemini-3.5-flash-lite"
-    llm_timeout_s: float = 60.0
+    llm_timeout_s: float = 30.0  # one attempt (answers: p95 ~10 s)
+    llm_deadline_s: float = 45.0  # whole call incl. retries and backoff (step 19)
     # Thinking models spend output tokens on hidden reasoning; "low" keeps answers fast and
     # stops the answer being cut off. Empty = don't send the parameter (e.g. for Ollama).
     llm_reasoning_effort: str = "low"
@@ -58,6 +59,17 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
+
+    # Hardening (step 19). Rate limits on POST /chat (app/ratelimit.py): per client IP, and a
+    # global daily budget below the Gemini free tier's ~480 requests/day.
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = 10
+    rate_limit_per_day: int = 100
+    chat_daily_budget: int = 400
+    # Browser origins allowed to call the API, comma-separated (e.g. the deployed web UI).
+    # Empty = no CORS headers: the dev UI goes through the Vite proxy (same origin).
+    cors_origins: str = ""
+    db_connect_timeout_s: int = 10
 
     # Retrieval for /chat: "vector" won the step 9 eval (hit@6 0.90 vs 0.80 hybrid).
     retrieval_mode: str = "vector"

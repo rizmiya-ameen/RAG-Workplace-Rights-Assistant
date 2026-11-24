@@ -143,6 +143,16 @@ ask for them in chat or print them.
 `uv run python -m app.observability stats --days 7` (guardrail decisions per rule).
 The pipeline CLI prints the `request_id` = Langfuse trace id (search it in Tracing).
 
+Web UI (`frontend/`, Node 22; run the API first):
+```bash
+cd frontend
+npm install --cache E:/dev-cache/npm   # keep the npm cache off C:
+npm run dev                            # http://127.0.0.1:5173, /api proxied to 127.0.0.1:8000
+npm test                               # Vitest + Testing Library (jsdom)
+npm run build                          # tsc --noEmit + vite build
+```
+Production API base: `VITE_API_BASE` (default `/api`, step 21).
+
 ## Rules
 
 - **Never weaken or bypass a guardrail to make something work.** If a guardrail blocks a
@@ -414,7 +424,68 @@ The pipeline CLI prints the `request_id` = Langfuse trace id (search it in Traci
   "sunday", no plurals); `_SCOPE` words take an optional plural "s"; tests + red-team fp-22 (63 rows,
   redteam-input still 0.97, the same 2 classifier FPs). tests/conftest.py forces the
   LANGFUSE_* keys empty so tests never send traces. 691 tests pass.
-- Next: step 18 (frontend, see plan).
+- Step 18 (frontend): done. `frontend/`: React 18 + Vite 6 + TypeScript + Tailwind 4
+  (`@tailwindcss/vite`; colour tokens in `src/index.css` with dark-mode values). Dev proxy
+  `/api` -> `127.0.0.1:8000` (no CORS in the API yet; step 21 decides). `src/types.ts`
+  mirrors ChatResponse/Citation/Route/Award; `api.ts` `askQuestion()` turns 503/422/5xx/
+  network errors into user-safe messages (validation details never shown); `format.ts`
+  `citationLabel()` ("Hospitality cl. 28.2", "NES s 117", "WorkSafe first steps", "#n" ->
+  "(part n)"), `ROUTE_INFO` badges. `App.tsx`: award filter, disclaimer banner, examples
+  from the eval sets, transcript, composer (Enter sends, 1000-char limit), retry on error,
+  clarify follow-up (`followUpQuestion`: reply joined to the question that got "clarify";
+  API stays stateless). `CitationPanel`: side sheet / phone bottom sheet with heading (last
+  part of the heading path as title), clause text, official link (noopener); Escape closes.
+  Answers rendered as text only (test). Backend: `Citation.heading` added (pipeline test).
+  Checked against the local API through the proxy (rag, pay_rate $47.39 = B.2.3 Level 2
+  Sunday, clarify -> "level 3" -> pay_rate $48.95) and in headless Edge (playwright-core in
+  the scratchpad, not a dependency): desktop light, phone dark, no horizontal overflow, no
+  console errors. Fixed from screenshots: phone header squeeze, long heading paths, favicon
+  404. Frontend 25 tests; backend 691 tests pass.
+- Step 19 (hardening): done. `app/ratelimit.py` `ChatLimiter` (sliding windows in memory,
+  thread lock, injectable clock; in-house instead of slowapi): per client IP
+  RATE_LIMIT_PER_MINUTE 10 / RATE_LIMIT_PER_DAY 100, global CHAT_DAILY_BUDGET 400 (below
+  Gemini's ~480/day); refused requests are not counted and cost nothing; /chat -> 429 +
+  Retry-After + friendly detail (`RATE_LIMIT_TEXT`); /health not limited; per process (one
+  container; replicas would need Redis). `tests/conftest.py` resets the limiter per test.
+  LLM: `llm_timeout_s` 60 -> 30 per attempt, new `llm_deadline_s` 45 for the whole call
+  (per-attempt timeout = min(timeout, time left); no retry if backoff would pass deadline
+  - 1 s); `chat(..., clock=)` for tests. Before: 3 x 60 s + backoff > 3 min.
+  DB `connect()` sets `connect_timeout` (DB_CONNECT_TIMEOUT_S 10). CORS: `setup_cors(app,
+  CORS_ORIGINS)`, off when empty (dev uses the Vite proxy), no credentials, GET/POST,
+  exposes X-Request-ID + Retry-After. Logs: `app/logs.py` JSON lines (extra= fields at top
+  level), `client_hash` = sha256(random per-process salt + IP)[:12]; middleware logs one
+  "request" line (method, path, status, latency, request_id, client_hash); pipeline logs a
+  "chat" line (request_id, route, latency, guardrails, citation count); never question,
+  answer or raw IP; uvicorn.access disabled; httpx at WARNING. Uvicorn's own startup lines
+  stay plain text. `tests/test_hardening.py` (15): limiter windows, 429 + Retry-After
+  through /chat, timeout path (every attempt hangs -> stops at 45 s -> 503), CORS allow /
+  deny / off, logs without question/answer/IP. Live: 10 x 200 then 429 (Retry-After 44),
+  JSON lines checked. Frontend 429 message test. 710 backend + 26 frontend tests pass.
+- Step 20 (CI): done, green on PR #1 (2026-11-24). `.github/workflows/ci.yml`, on push
+  to main, PRs and manual dispatch; no secrets, no LLM. Jobs: `backend` (setup-uv 0.13.8 with
+  cache, `uv sync` frozen, ruff check + format --check, ONNX model cache keyed on
+  config.py, `app.db.init` against service `pgvector/pgvector:pg18` (fails if unreachable,
+  so DB tests can't skip silently), `pytest -q -rs`, ingest --all/--nes/--worksafe from
+  committed data/raw, `run_eval --mode retrieval --search-modes vector+rerank --min-hit
+  0.94 --no-save` -> step summary); `frontend` (Node 22, npm ci, typecheck, vitest,
+  build); `docker` (buildx with GHA cache, `/health` smoke test, image size to summary).
+  `run_eval --min-hit` + `gate_failures()` (test) added. Local gate run on Neon: hit@6
+  0.96, passed, 6 min (CI runners are faster). `ruff format` fixed app/main.py.
+  First PR run: API job failed on test_hybrid_adds_full_text_matches. CI's empty DB held
+  only the 20-chunk test award; "disconnect" in 40% > MAX_DF, so every word was dropped and
+  full text found nothing (locally hidden: tests ran next to Neon's ~1,400 real chunks, and
+  tied vector distances put 13A in the hybrid top 3 by luck). Fix: common-word filter only
+  with >= MIN_DF_CHUNKS (200) chunks (production unchanged; /chat doesn't use full text);
+  test_search's `conn` now creates an empty schema per test (SET LOCAL search_path, rolled
+  back); regression tests for small/large corpus. Second run green: API 11 min (pytest 704
+  passed + 9 classifier skips, retrieval gate vector+rerank hit@1 0.77 / hit@6 0.96 / MRR
+  0.832, identical to Neon), Docker build + /health 50 s, web UI 18 s. 713 backend tests.
+  `gh` CLI installed and logged in (Program Files\GitHub CLI); repo is private, so the
+  public API can't read runs.
+- Next: step 21 (deploy to Azure; see plan). Notes for it: Dockerfile installs dev deps
+  (use `uv sync --no-dev`), models download on first request (bake bge + re-ranker into
+  the image or warm up at start; injection classifier is 740 MB), CORS_ORIGINS = UI origin,
+  run uvicorn with --proxy-headers so rate limits see real client IPs.
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon

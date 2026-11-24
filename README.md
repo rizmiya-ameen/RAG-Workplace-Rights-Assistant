@@ -1,5 +1,7 @@
 # Workplace Rights Assistant
 
+[![CI](https://github.com/rizmiya-ameen/RAG-Workplace-Rights-Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/rizmiya-ameen/RAG-Workplace-Rights-Assistant/actions/workflows/ci.yml)
+
 A retrieval-augmented assistant for Australian workplace rights. It answers questions about
 Modern Awards (Hospitality MA000009, General Retail MA000004, Fast Food MA000003, Clerks
 MA000002), the National Employment Standards (Fair Work Act 2009, Part 2-2) and WorkSafe
@@ -9,10 +11,10 @@ Victoria guidance, and cites the exact source every time (for example `MA000009:
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–17 of 22 are done. Four awards, the NES and 12 WorkSafe
+> Work in progress: build steps 1–20 of 22 are done. Four awards, the NES and 12 WorkSafe
 > pages; retrieval with a cross-encoder re-ranker, cited answers (`POST /chat`), exact pay
 > rates from a structured tool, guardrails with an injection classifier, the full
-> evaluation work and Langfuse tracing; the web UI comes next.
+> evaluation work, Langfuse tracing, a React web UI, rate limits and CI; deployment to Azure comes next.
 
 ## How it works
 
@@ -148,6 +150,48 @@ rules fixed them ("earn" always means money; a money word plus a level and an em
 type is an amount question; "hourly pay"), and those nine rows are now in the set. A
 misrouted pay question fails safe: on the clause route the model cannot state amounts, so
 the user gets no number rather than a wrong one.
+
+## Web UI
+
+A small React + TypeScript + Tailwind page (`frontend/`) over `POST /chat`:
+
+- every answer carries a route badge (Answer, Pay rate, Needs a detail, Not in sources,
+  Referred, Not answered, Out of scope), so it is clear whether the reply came from the
+  clauses, the pay table or a guardrail;
+- citation chips ("Hospitality cl. B.2.3", "NES s 117", "WorkSafe first steps") open the
+  clause text the model was given, with a link to the official page;
+- an award filter (NES and WorkSafe guidance are always searched), a disclaimer banner and
+  the disclaimer under every answer, plus the latency and a short request ref that matches
+  the Langfuse trace;
+- the API is stateless, so when it asks for a missing detail ("which level?"), the reply is
+  sent together with the original question;
+- answers are rendered as plain text, never HTML (they come from a language model; a test
+  checks that `<img onerror=…>` stays text).
+
+## Hardening
+
+Limits on what one request, one client and one day can cost (OWASP LLM10, unbounded
+consumption):
+
+| Limit | Default | What happens |
+|---|---|---|
+| Question length | 1,000 characters | 422 before any work |
+| Per client | 10 a minute, 100 a day | 429 with `Retry-After`; no search, LLM call or DB write |
+| Whole service | 400 questions a day | 429; below the Gemini free tier's ~480 a day, so the demo never fails mid-conversation |
+| LLM reply | 2,048 tokens | `max_tokens` on every call |
+| LLM time | 30 s an attempt, 45 s in total | retries (busy, rate-limited, timed out) stop at the deadline; then 503 |
+| Database connect | 10 s | fails instead of hanging |
+
+Before the deadline, three 60-second attempts plus backoff could hold a request open for over
+three minutes. The limiter is about 60 lines in `app/ratelimit.py` (in memory, per process:
+right for one small container; several replicas would need Redis). CORS is off unless
+`CORS_ORIGINS` lists the web UI's origin, with no credentials and only `GET`/`POST`.
+
+Logs are JSON, one line per request and one per answer, with fields such as `route`,
+`status`, `latency_ms` and `request_id` (the Langfuse trace id). The question, the answer and
+client IPs are never logged: a client is a salted hash, enough to spot one client hammering
+the API. Uvicorn's access log (raw IPs) is switched off. Tests check all of this, including a
+model that never answers (`tests/test_hardening.py`).
 
 ## Observability
 
@@ -298,6 +342,26 @@ in rate tables ("7.00 pm") were masked as dollar amounts. Each fix has a regress
 Run it: `cd backend; uv run python -m app.eval.run_eval --mode retrieval` (or
 `--mode redteam-input`, or `--mode answers`, ~15 minutes, resumable with `--resume`).
 
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) on every push to `main` and every pull request:
+
+- **API:** ruff (lint + format), the full pytest suite against a fresh `pgvector/pgvector:pg18`
+  service container, then a rebuild of the whole index from the committed raw pages
+  (`data/raw/`) and the retrieval eval on the golden set. The build fails if vector +
+  re-ranker hit@6 drops below 0.94 (it is 0.96); the results table goes to the run summary.
+- **Web UI:** type check, Vitest, production build.
+- **Docker:** builds the API image and checks that `/health` answers.
+
+The first CI run found a bug the laptop never showed: on a database holding only a
+20-chunk test award, the full-text search's common-word filter dropped every word. The
+filter now needs at least 200 chunks, and the search tests run in an empty schema so the
+real data can't hide such a bug again. On CI the retrieval gate gives the same numbers as
+on Neon (hit@6 0.96, MRR 0.832).
+
+No secrets and no LLM calls in CI: the answer eval (faithfulness, red-team on real answers)
+stays a manual run because of the Gemini free-tier quota.
+
 ## Running locally
 
 Requires Python 3.12 with [uv](https://docs.astral.sh/uv/) and a Postgres 18 database with
@@ -313,4 +377,14 @@ uv run python -m app.pipeline "Can an office worker ask to work from home?"   # 
 uv run uvicorn app.main:app                                                 # /docs, POST /chat
 uv run python -m app.observability check   # optional: LANGFUSE_* keys in backend/.env
 uv run pytest -q
+```
+
+Web UI (Node 22), with the API running on port 8000:
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://127.0.0.1:5173 (Vite forwards /api to the API, no CORS needed)
+npm test           # Vitest + Testing Library
+npm run build      # type-check + production build in dist/
 ```

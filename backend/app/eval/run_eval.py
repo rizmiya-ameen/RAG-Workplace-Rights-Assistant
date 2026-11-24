@@ -38,6 +38,7 @@ import argparse
 import json
 import statistics
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -286,6 +287,15 @@ def _git_sha() -> str | None:
         return None
 
 
+def gate_failures(results: list[dict], min_hit: float, k: int = K) -> list[str]:
+    """CI gate (step 20): every variant run must keep hit@k at or above min_hit."""
+    return [
+        f"{r['search_mode']}: hit@{k} {r['metrics'][f'hit@{k}']:.3f} < {min_hit}"
+        for r in results
+        if r["metrics"][f"hit@{k}"] < min_hit
+    ]
+
+
 def markdown_table(results: list[dict], k: int = K) -> str:
     header = (
         f"| Retrieval | hit@1 | hit@{k} | MRR@{k} | hit@{CANDIDATES} | p50 ms "
@@ -326,6 +336,11 @@ def main() -> None:
     ap.add_argument("--pace", type=float, default=4.0, help="answers: seconds between LLM calls")
     ap.add_argument("--no-judge", action="store_true", help="answers: skip the faithfulness judge")
     ap.add_argument("--resume", type=Path, help="answers: results .jsonl to continue")
+    ap.add_argument(
+        "--min-hit",
+        type=float,
+        help=f"retrieval: exit 1 if any variant's hit@{K} is below this (CI gate)",
+    )
     args = ap.parse_args()
 
     golden = load_golden()
@@ -394,6 +409,14 @@ def main() -> None:
 
         if not args.no_save:
             _save(conn, args.mode, results, {r["search_mode"]: r["metrics"] for r in results})
+
+    if args.min_hit is not None:
+        failures = gate_failures(results, args.min_hit)
+        for f in failures:
+            print(f"\nGATE FAILED {f}")
+        if failures:
+            sys.exit(1)
+        print(f"\ngate passed: hit@{K} >= {args.min_hit} for {', '.join(args.search_modes)}")
 
 
 def run_answers(args, golden: list[dict]) -> None:

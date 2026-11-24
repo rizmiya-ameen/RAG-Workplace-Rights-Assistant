@@ -59,14 +59,18 @@ _VECTOR_SQL = f"""
 
 # OR of the question's stemmed words, minus words in more than MAX_DF of all chunks
 # ("employe" is in ~76%): ts_rank has no IDF, so common words would swamp the ranking.
+# The filter needs at least MIN_DF_CHUNKS chunks: on a handful of chunks a share means
+# nothing (CI's empty database held only a 20-chunk test award, where "disconnect" was in
+# 40%, so every word was dropped and full text found nothing). Production has ~1,400.
 # Lexemes are already stemmed, so the tsquery is built with the 'simple' config.
 _TEXT_SQL = f"""
     WITH {_LATEST},
+    total AS (SELECT count(*) AS n FROM chunks),
     words AS (
         SELECT s.word
-        FROM ts_stat('SELECT tsv FROM chunks') s
+        FROM ts_stat('SELECT tsv FROM chunks') s, total
         WHERE s.word = ANY (tsvector_to_array(to_tsvector('english', %(text)s)))
-          AND s.ndoc <= %(max_df)s * (SELECT count(*) FROM chunks)
+          AND (s.ndoc <= %(max_df)s * total.n OR total.n < %(min_df_chunks)s)
     ),
     q AS (SELECT to_tsquery('simple', string_agg(quote_literal(word), ' | ')) AS query FROM words)
     SELECT c.id, l.source_id, c.clause_ref, c.heading, c.content, c.is_rate_table,
@@ -76,6 +80,7 @@ _TEXT_SQL = f"""
     ORDER BY rank DESC, c.id
     LIMIT %(n)s"""
 MAX_DF = 0.2
+MIN_DF_CHUNKS = 200
 
 
 @dataclass
@@ -129,6 +134,7 @@ def _text(conn, text: str, award: str | None, n: int, general: bool) -> list[tup
         "award": award,
         "n": n,
         "max_df": MAX_DF,
+        "min_df_chunks": MIN_DF_CHUNKS,
         "awards": True,
         "general": general,
     }
