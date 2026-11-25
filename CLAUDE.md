@@ -482,10 +482,26 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   0.832, identical to Neon), Docker build + /health 50 s, web UI 18 s. 713 backend tests.
   `gh` CLI installed and logged in (Program Files\GitHub CLI); repo is private, so the
   public API can't read runs.
-- Next: step 21 (deploy to Azure; see plan). Notes for it: Dockerfile installs dev deps
-  (use `uv sync --no-dev`), models download on first request (bake bge + re-ranker into
-  the image or warm up at start; injection classifier is 740 MB), CORS_ORIGINS = UI origin,
-  run uvicorn with --proxy-headers so rate limits see real client IPs.
+- Step 21 (deploy): done 2026-11-25. Live: UI https://wonderful-bay-0aec87a00.3.azurestaticapps.net,
+  API https://wra-api.grayfield-b116c3e7.australiaeast.azurecontainerapps.io. Repo and
+  ghcr.io image are public (image inherited the repo's visibility; no pull token).
+  Dockerfile: `uv sync --no-dev`, models baked in (`python -m app.warmup --download`),
+  non-root, HF_HUB_OFFLINE, WARM_UP_MODELS loads the 3 models in lifespan before the port
+  binds (RSS ~811 MB), `--proxy-headers`. `deploy/azure_setup.py` (from backend/, needs az
+  + gh logged in; `--dry-run` first; idempotent): RG rg-workplace-rights (australiaeast),
+  env cae-workplace-rights, app wra-api (scale 0..1; secrets from backend/.env as
+  Container Apps secrets), SWA wra-web Free (eastasia), CORS_ORIGINS = SWA URL, Entra app
+  gh-workplace-rights-deploy with Contributor on the RG and two federated credentials:
+  GitHub's OIDC subject for this repo is `repo:owner@<id>/name@<id>:ref:refs/heads/main`
+  (immutable ids; the plain `repo:owner/name` form failed with AADSTS700213), so both
+  forms are trusted. On Windows the script runs the az CLI's bundled python.exe (az.cmd
+  would let cmd.exe split the Neon URL at "&"). Deploy workflow: CI success on main (or
+  dispatch) -> image :sha + :latest -> OIDC login -> containerapp update -> /health ->
+  UI build (VITE_API_BASE = API_URL) -> SWA upload. Verified live: health 200 (cold 7 s),
+  CSP/nosniff headers on the UI, CORS allows only the UI origin (others 400), "Do casuals
+  get more on Sundays?" -> rag, cites B.2.3/B.3.4/B.4.4, 6.5 s. Azure budget `monthly-1`
+  (1/month, alerts to the subscription Owner at 50%/100% actual, 100% forecast).
+- Next: step 22 (portfolio polish; see plan).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon
