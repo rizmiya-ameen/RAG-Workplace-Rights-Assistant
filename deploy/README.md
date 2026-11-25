@@ -35,8 +35,9 @@ Container Apps ──► Neon Postgres (Sydney) · Gemini API · Langfuse
    ```
 2. Merge to `main` once so the Deploy workflow pushes the first image (its Azure steps
    are skipped until step 4 has run).
-3. Make the image public: GitHub → your profile → **Packages** → `workplace-rights-api` →
-   **Package settings** → Change visibility → **Public**. (New packages start private.)
+3. Check the image is public. Pushed from this public repo it inherited the repo's
+   visibility; if it didn't: GitHub → your profile → **Packages** → `workplace-rights-api`
+   → **Package settings** → Change visibility → **Public**.
 4. Create the Azure resources, from `backend/`:
    ```
    uv run python ../deploy/azure_setup.py --dry-run   # see the plan

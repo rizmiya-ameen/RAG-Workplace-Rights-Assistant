@@ -11,10 +11,14 @@ Victoria guidance, and cites the exact source every time (for example `MA000009:
 It gives general information only, never personal legal advice. Personal or dispute questions
 are referred to the Fair Work Ombudsman (13 13 94).
 
-> Work in progress: build steps 1–20 of 22 are done. Four awards, the NES and 12 WorkSafe
+**Live demo:** https://wonderful-bay-0aec87a00.3.azurestaticapps.net (the API sleeps when
+idle, so the first question can take up to a minute while it wakes up).
+
+> Work in progress: build steps 1–21 of 22 are done. Four awards, the NES and 12 WorkSafe
 > pages; retrieval with a cross-encoder re-ranker, cited answers (`POST /chat`), exact pay
 > rates from a structured tool, guardrails with an injection classifier, the full
-> evaluation work, Langfuse tracing, a React web UI, rate limits and CI; deployment to Azure comes next.
+> evaluation work, Langfuse tracing, a React web UI, rate limits, CI and deployment to
+> Azure; portfolio polish comes next.
 
 ## How it works
 
@@ -361,6 +365,15 @@ on Neon (hit@6 0.96, MRR 0.832).
 
 No secrets and no LLM calls in CI: the answer eval (faithfulness, red-team on real answers)
 stays a manual run because of the Gemini free-tier quota.
+
+## Deployment
+
+After CI passes on `main`, `.github/workflows/deploy.yml` pushes the API image to ghcr.io,
+rolls it out to **Azure Container Apps** (1 vCPU / 2 GiB, scales to zero, Australia East)
+and uploads the web UI to **Azure Static Web Apps** (Free). GitHub logs in to Azure with
+OpenID Connect, so no Azure password is stored anywhere; the API's secrets live in Container
+Apps. The ONNX models are baked into the image and loaded before the container takes
+traffic. Running cost is within Azure's free grants. Setup and costs: `deploy/README.md`.
 
 ## Running locally
 

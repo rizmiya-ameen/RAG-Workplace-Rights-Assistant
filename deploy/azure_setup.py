@@ -94,6 +94,8 @@ def run(tool: str, args: list[str], *, stdin: str | None = None, check: bool = T
         return ""
     command = (AZ if tool == "az" else [GH]) + args
     out = subprocess.run(command, input=stdin, capture_output=True, text=True, check=False)
+    if DRY_RUN and check and out.returncode != 0:
+        return "<created-by-the-real-run>"  # reading something the dry run didn't create
     if check and out.returncode != 0:
         sys.exit(f"failed: {tool} {shown}\n{_mask(out.stderr.strip())[-800:]}")
     return out.stdout.strip() if out.returncode == 0 else ""
@@ -222,11 +224,23 @@ def main() -> None:
         az("ad", "sp", "create", "--id", app_id, "-o", "none")
     creds = az("ad", "app", "federated-credential", "list", "--id", app_id, "--query",
                "[].name", "-o", "tsv")  # fmt: skip
-    if "github-main" not in creds.split():
+    # GitHub's OIDC subject is either "repo:owner/name:..." or, for newer repos,
+    # "repo:owner@<owner id>/name@<repo id>:..." (immutable ids). Trust both, main only.
+    owner_id, repo_id = run(
+        "gh", ["api", f"repos/{REPO}", "--jq", "[.owner.id, .id] | @tsv"]
+    ).split()
+    owner, name = REPO.split("/")
+    subjects = {
+        "github-main": f"repo:{REPO}:ref:refs/heads/main",
+        "github-main-ids": f"repo:{owner}@{owner_id}/{name}@{repo_id}:ref:refs/heads/main",
+    }
+    for cred_name, subject in subjects.items():
+        if cred_name in creds.split():
+            continue
         cred = {
-            "name": "github-main",
+            "name": cred_name,
             "issuer": "https://token.actions.githubusercontent.com",
-            "subject": f"repo:{REPO}:ref:refs/heads/main",
+            "subject": subject,
             "audiences": ["api://AzureADTokenExchange"],
         }
         az("ad", "app", "federated-credential", "create", "--id", app_id, "--parameters",
