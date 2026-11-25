@@ -501,7 +501,16 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   CSP/nosniff headers on the UI, CORS allows only the UI origin (others 400), "Do casuals
   get more on Sundays?" -> rag, cites B.2.3/B.3.4/B.4.4, 6.5 s. Azure budget `monthly-1`
   (1/month, alerts to the subscription Owner at 50%/100% actual, 100% forecast).
-- Next: step 22 (portfolio polish; see plan).
+- Step 22 (portfolio polish): README rewritten for a first-time reader (live demo + GIF,
+  at-a-glance numbers, Mermaid architecture, design decisions and trade-offs, OWASP table,
+  eval summary, "what the evals caught", known limitations, run-from-scratch steps, CI and
+  deploy, layout, licence). Deep dives moved word for word to `docs/evaluation.md` and
+  `docs/security.md`. `docs/images/demo.gif` (42 s, 1.6 MB) recorded from the live site
+  with headless Edge (playwright-core in the scratchpad, not a dependency) + Pillow; the
+  live CSP blocks Playwright's `waitForFunction` (eval), so wait on locators. MIT LICENSE
+  for code; README says data/raw pages belong to their publishers. The personal study
+  guide moved to `notes/` (git-ignored, kept locally; the repo is public).
+  When numbers change, update README + docs/ together (README tables are summaries).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon
