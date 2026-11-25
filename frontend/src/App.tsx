@@ -14,6 +14,8 @@ const EXAMPLES = [
   { tag: "WorkSafe", q: "What should a worker do if they are sexually harassed at work?" },
 ];
 
+export const SLOW_AFTER_MS = 10_000; // longer than a normal answer (p95 ~10 s)
+
 /** The API is stateless. When it asked for a missing detail (route "clarify"), the reply is
  * sent together with the question it belongs to, so "level 2" alone still makes sense. */
 export function followUpQuestion(pending: string | null, reply: string): string {
@@ -36,6 +38,15 @@ export default function App() {
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [turns, loading]);
+
+  // The deployed API scales to zero when idle; the first answer after a quiet spell waits
+  // for the container to start and load its models (up to about a minute).
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!loading) return setSlow(false);
+    const timer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   const send = useCallback(
     async (typed: string, opts: { retry?: boolean } = {}) => {
@@ -149,8 +160,10 @@ export default function App() {
             ))}
             {loading && (
               <li className="flex items-center gap-2 text-sm text-muted" role="status">
-                <span className="size-2 animate-pulse rounded-full bg-accent" />
-                Checking the awards and guidance…
+                <span className="size-2 shrink-0 animate-pulse rounded-full bg-accent" />
+                {slow
+                  ? "Waking the assistant up. It sleeps when nobody is using it, so the first answer can take up to a minute…"
+                  : "Checking the awards and guidance…"}
               </li>
             )}
           </ol>

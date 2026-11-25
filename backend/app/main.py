@@ -24,6 +24,12 @@ log = logging.getLogger("app.http")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Deployed container (WARM_UP_MODELS=true): load the models before accepting traffic.
+    # uvicorn binds the port only after this, so Azure's startup probe waits for it.
+    if get_settings().warm_up_models:
+        from app.warmup import warm_up
+
+        log.info("models_loaded", extra={"seconds": warm_up()})
     yield
     obs.flush()  # send buffered traces before the process exits
 

@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # Empty = no CORS headers: the dev UI goes through the Vite proxy (same origin).
     cors_origins: str = ""
     db_connect_timeout_s: int = 10
+    # Load every model at API startup (step 21: true in the Dockerfile). False = lazy, on the
+    # first request that needs each model (local dev, tests).
+    warm_up_models: bool = False
 
     # Retrieval for /chat: "vector" won the step 9 eval (hit@6 0.90 vs 0.80 hybrid).
     retrieval_mode: str = "vector"

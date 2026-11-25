@@ -1,7 +1,7 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App, { followUpQuestion } from "./App";
+import App, { followUpQuestion, SLOW_AFTER_MS } from "./App";
 import type { ChatResponse } from "./types";
 
 // Clause text is verbatim MA000009 clause 11.3 (parse_award --award MA000009 --show 11.3).
@@ -167,6 +167,21 @@ describe("App", () => {
     expect(await screen.findByText(/2 consecutive hours each time/)).toBeInTheDocument();
     expect(sentBodies()[1].question).toBe("What is the casual loading?");
     expect(screen.getAllByText("What is the casual loading?")).toHaveLength(1);
+  });
+});
+
+describe("cold start", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("says the assistant is waking up when an answer takes longer than usual", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fetchMock.mockReturnValue(new Promise(() => {})); // the API is still starting
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<App />);
+    await user.click(screen.getByText("What is the casual loading for hospitality workers?"));
+    expect(screen.getByRole("status")).toHaveTextContent("Checking the awards");
+    await act(() => vi.advanceTimersByTimeAsync(SLOW_AFTER_MS));
+    expect(screen.getByRole("status")).toHaveTextContent("Waking the assistant up");
   });
 });
 
