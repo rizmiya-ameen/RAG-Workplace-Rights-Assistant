@@ -24,3 +24,6 @@ frontend/dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Personal notes (study guide, interview prep): kept locally, not published
+notes/
