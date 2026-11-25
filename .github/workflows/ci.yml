@@ -112,7 +112,7 @@ jobs:
   docker:
     name: API image (docker build)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -125,11 +125,16 @@ jobs:
           tags: workplace-rights-api:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Smoke test (/health)
+      # The container loads the baked-in models (offline) before it binds the port, so this
+      # also proves the image starts without Hugging Face.
+      - name: Smoke test (models load, /health answers)
         run: |
           docker run -d --name api -p 8000:8000 workplace-rights-api:ci
-          for i in $(seq 1 30); do
-            curl -fs http://127.0.0.1:8000/health && exit 0
+          for i in $(seq 1 180); do
+            if curl -fs http://127.0.0.1:8000/health; then
+              docker logs api 2>&1 | grep models_loaded
+              exit 0
+            fi
             sleep 1
           done
           docker logs api
