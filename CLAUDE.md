@@ -480,8 +480,8 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   back); regression tests for small/large corpus. Second run green: API 11 min (pytest 704
   passed + 9 classifier skips, retrieval gate vector+rerank hit@1 0.77 / hit@6 0.96 / MRR
   0.832, identical to Neon), Docker build + /health 50 s, web UI 18 s. 713 backend tests.
-  `gh` CLI installed and logged in (Program Files\GitHub CLI); repo is private, so the
-  public API can't read runs.
+  `gh` CLI installed and logged in (Program Files\GitHub CLI; not on PATH, use the full
+  path). The repo was private then; it is public since step 21.
 - Step 21 (deploy): done 2026-11-25. Live: UI https://wonderful-bay-0aec87a00.3.azurestaticapps.net,
   API https://wra-api.grayfield-b116c3e7.australiaeast.azurecontainerapps.io. Repo and
   ghcr.io image are public (image inherited the repo's visibility; no pull token).
@@ -511,6 +511,16 @@ Production API base: `VITE_API_BASE` (default `/api`, step 21).
   for code; README says data/raw pages belong to their publishers. The personal study
   guide moved to `notes/` (git-ignored, kept locally; the repo is public).
   When numbers change, update README + docs/ together (README tables are summaries).
+- Final review (2026-11-26): all 22 steps done. Live image `d58480c`, /health 200, CI +
+  Deploy green. Azure RG holds 4 resources: wra-api (0 replicas when idle), the
+  environment, wra-web (Free), and Log Analytics `workspace-rgworkplacerightsi2Kk`
+  (created with the environment; PerGB2018, 30-day retention, no daily cap: the only
+  resource that can bill with zero traffic; first 5 GB/month free). Billing currency is
+  USD, so budget `monthly-1` is US$1 (~A$1.55); spend $0.00. Secret scan of tracked files
+  and full history: no `.env`, keys or subscription/tenant ids; 23 of 27 commits carry the
+  user's personal email as author (user's call; noreply address suggested for the future).
+  Interview prep (pitch, walkthrough, practice questions, costs, limitations) is in
+  `notes/PROJECT_GUIDE.md` sections 14-16 (local only).
 - Decisions: retrieval for chat = vector + cross-encoder re-rank (step 13). LLM = Gemini
   free tier (`gemini-3.5-flash-lite`) from step 10; Ollama optional offline. The free tier
   stopped us with 429 after ~480 requests in a day; one full answer eval is ~140 calls. DB = Neon
